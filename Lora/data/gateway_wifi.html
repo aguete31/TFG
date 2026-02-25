@@ -1,0 +1,440 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conexión WiFi - Gateway LoRa</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #0f172a 0, #020617 50%, #000 100%);
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: rgba(15, 23, 42, 0.92);
+      border-radius: 16px;
+      padding: 24px 24px 20px;
+      box-shadow:
+        0 22px 45px rgba(0, 0, 0, 0.6),
+        0 0 0 1px rgba(148, 163, 184, 0.1);
+      backdrop-filter: blur(18px);
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .icon-circle {
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 30% 0, #22c55e, #16a34a);
+      box-shadow: 0 0 18px rgba(34, 197, 94, 0.6);
+      color: white;
+      font-size: 22px;
+    }
+
+    h1 {
+      font-size: 19px;
+      margin: 0;
+      color: #f9fafb;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: #e5e7eb;
+    }
+
+    .input-wrapper {
+      position: relative;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 10px;
+      border: 1px solid #4b5563;
+      background: rgba(15, 23, 42, 0.9);
+      color: #f9fafb;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+    }
+
+    input::placeholder {
+      color: #6b7280;
+    }
+
+    input:focus {
+      border-color: #22c55e;
+      box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.4);
+      background: rgba(15, 23, 42, 0.98);
+    }
+
+    .toggle-password {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px;
+      height: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+
+    .toggle-password:hover {
+      background: rgba(148, 163, 184, 0.15);
+    }
+
+    .toggle-password svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: #9ca3af;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+      margin-bottom: 16px;
+    }
+
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status-chip {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      color: #e5e7eb;
+      background: rgba(15, 23, 42, 0.7);
+    }
+
+    .status-circle {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background-color: #6b7280;
+      box-shadow: 0 0 0 0 rgba(22, 163, 74, 0);
+      transition: background-color 0.3s, box-shadow 0.4s;
+    }
+
+    .status-text {
+      font-size: 12px;
+      color: #9ca3af;
+    }
+
+    .status-circle.idle {
+      background-color: #6b7280;
+    }
+
+    .status-circle.connecting {
+      background-color: #fbbf24;
+      box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
+    }
+
+    .status-circle.connected {
+      background-color: #22c55e;
+      box-shadow: 0 0 12px rgba(34, 197, 94, 0.7);
+    }
+
+    .status-circle.error {
+      background-color: #ef4444;
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.7);
+    }
+
+    button {
+      width: 100%;
+      margin-top: 4px;
+      padding: 11px 12px;
+      border-radius: 999px;
+      border: none;
+      outline: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      color: #0b1120;
+      background: linear-gradient(135deg, #22c55e, #4ade80);
+      box-shadow:
+        0 10px 22px rgba(16, 185, 129, 0.35),
+        0 0 0 1px rgba(74, 222, 128, 0.3);
+      transition: transform 0.1s, box-shadow 0.1s, opacity 0.2s, background 0.2s;
+    }
+
+    button:hover:enabled {
+      transform: translateY(-1px);
+      box-shadow:
+        0 16px 30px rgba(16, 185, 129, 0.4),
+        0 0 0 1px rgba(74, 222, 128, 0.4);
+    }
+
+    button:active:enabled {
+      transform: translateY(0px);
+      box-shadow:
+        0 8px 18px rgba(16, 185, 129, 0.3),
+        0 0 0 1px rgba(74, 222, 128, 0.4);
+    }
+
+    button:disabled {
+      cursor: default;
+      opacity: 0.65;
+      box-shadow: none;
+      background: linear-gradient(135deg, #6b7280, #4b5563);
+      color: #e5e7eb;
+    }
+
+    .footer {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <div class="header">
+      <div class="icon-circle">🛜</div>
+      <div>
+        <h1>Conexión WiFi del Gateway</h1>
+        <div class="subtitle">
+          Conecta el gateway a la WiFi de casa para integrarlo con Home Assistant.
+        </div>
+      </div>
+    </div>
+
+    <label for="ssid">Nombre de la WiFi (SSID)</label>
+    <div class="input-wrapper">
+      <input type="text" id="ssid" placeholder="Ej: MiFibraDeCasa" />
+    </div>
+
+    <label for="wifiPassword">Contraseña WiFi</label>
+    <div class="input-wrapper">
+      <input type="password" id="wifiPassword" placeholder="Contraseña de la WiFi" />
+      <div class="toggle-password" id="toggleWifiPassword">
+        <!-- Ojo cerrado -->
+        <svg id="eyeWifiOff" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <path
+            d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24">
+          </path>
+          <line x1="1" y1="1" x2="23" y2="23"></line>
+        </svg>
+        <!-- Ojo abierto -->
+        <svg id="eyeWifiOn" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="display:none;">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      </div>
+    </div>
+
+    <div class="status-row">
+      <div class="status-left">
+        <div id="statusCircle" class="status-circle idle"></div>
+        <div class="status-text" id="statusText">Sin conexión configurada</div>
+      </div>
+      <div class="status-chip" id="statusChip">Estado: Idle</div>
+    </div>
+
+    <button id="connectBtn">Conectar a la WiFi</button>
+
+    <div class="footer">
+      <div class="pill" id="wifiInfo">Gateway TTGO · Modo configuración WiFi</div>
+      <div>Tras conectar, continúa la configuración en Home Assistant</div>
+    </div>
+
+  </div>
+
+  <script>
+    const ssidInput = document.getElementById('ssid');
+    const wifiPassword = document.getElementById('wifiPassword');
+    const connectBtn = document.getElementById('connectBtn');
+    const statusCircle = document.getElementById('statusCircle');
+    const statusText = document.getElementById('statusText');
+    const statusChip = document.getElementById('statusChip');
+    const wifiInfo = document.getElementById('wifiInfo');
+    const toggleWifiPass = document.getElementById('toggleWifiPassword');
+    const eyeWifiOff = document.getElementById('eyeWifiOff');
+    const eyeWifiOn = document.getElementById('eyeWifiOn');
+
+    let wifiInterval = null;
+
+    // Toggle mostrar/ocultar contraseña WiFi
+    toggleWifiPass.addEventListener('click', () => {
+      if (wifiPassword.type === 'password') {
+        wifiPassword.type = 'text';
+        eyeWifiOff.style.display = 'none';
+        eyeWifiOn.style.display = 'block';
+      } else {
+        wifiPassword.type = 'password';
+        eyeWifiOff.style.display = 'block';
+        eyeWifiOn.style.display = 'none';
+      }
+    });
+
+    function setStatus(mode, text) {
+      statusCircle.className = 'status-circle ' + mode;
+      if (text) statusText.textContent = text;
+
+      switch (mode) {
+        case 'idle':
+          statusChip.textContent = 'Estado: Idle';
+          break;
+        case 'connecting':
+          statusChip.textContent = 'Estado: Conectando...';
+          break;
+        case 'connected':
+          statusChip.textContent = 'Estado: Conectado';
+          break;
+        case 'error':
+          statusChip.textContent = 'Estado: Error';
+          break;
+      }
+    }
+
+    function setButtonLoading(loading) {
+      if (loading) {
+        connectBtn.disabled = true;
+        connectBtn.textContent = 'Conectando...';
+      } else {
+        connectBtn.disabled = false;
+        connectBtn.textContent = 'Conectar a la WiFi';
+      }
+    }
+
+    // Enviar SSID + contraseña al gateway
+    connectBtn.addEventListener('click', () => {
+      const ssid = ssidInput.value.trim();
+      const pw = wifiPassword.value.trim();
+
+      if (!ssid) {
+        alert('Introduce el nombre (SSID) de la WiFi');
+        return;
+      }
+      if (!pw) {
+        if (!confirm('¿Seguro que la WiFi no tiene contraseña?')) {
+          return;
+        }
+      }
+
+      setButtonLoading(true);
+      setStatus('connecting', 'Intentando conectar a la WiFi...');
+
+      fetch('/wifi_config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'ssid=' + encodeURIComponent(ssid) +
+          '&password=' + encodeURIComponent(pw)
+      })
+        .then(res => {
+          if (!res.ok) throw new Error('Error en el servidor');
+          return res.text();
+        })
+        .then(() => {
+          // El resultado real lo veremos vía /wifi_status
+        })
+        .catch(() => {
+          alert('Error al enviar la configuración WiFi al gateway');
+          setButtonLoading(false);
+          setStatus('error', 'Error al enviar la configuración');
+        });
+    });
+
+    // Consultar el estado WiFi periódico
+    function updateWifiStatus() {
+      fetch('/wifi_status')
+        .then(res => res.json())
+        .then(data => {
+          // Esperamos algo tipo:
+          // { "state": "idle|connecting|connected|failed", "ssid": "xxx", "ip": "192.168.1.50" }
+          const st = data.state || 'idle';
+          const ssid = data.ssid || '';
+
+          if (ssid) {
+            ssidInput.value = ssid;
+            wifiInfo.textContent = 'Configurado para: ' + ssid;
+          } else {
+            wifiInfo.textContent = 'Gateway TTGO · Modo configuración WiFi';
+          }
+
+          if (st === 'connected') {
+            setStatus('connected', 'Conectado correctamente a la WiFi');
+            setButtonLoading(false);
+          } else if (st === 'connecting') {
+            setStatus('connecting', 'Intentando conectar a la WiFi...');
+            setButtonLoading(true);
+          } else if (st === 'failed') {
+            setStatus('error', 'No se ha podido conectar a la WiFi');
+            setButtonLoading(false);
+          } else {
+            setStatus('idle', ssid ? 'Configuración guardada, sin conexión activa' : 'Sin conexión configurada');
+            setButtonLoading(false);
+          }
+        })
+        .catch(() => {
+          setStatus('error', 'Sin respuesta del gateway');
+          setButtonLoading(false);
+        });
+    }
+
+    wifiInterval = setInterval(updateWifiStatus, 2000);
+    updateWifiStatus();
+  </script>
+</body>
+
+</html>

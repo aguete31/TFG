@@ -1,0 +1,425 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Emparejamiento Heltec LoRa</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #0f172a 0, #020617 50%, #000 100%);
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: rgba(15, 23, 42, 0.92);
+      border-radius: 16px;
+      padding: 24px 24px 20px;
+      box-shadow:
+        0 22px 45px rgba(0,0,0,0.6),
+        0 0 0 1px rgba(148,163,184,0.1);
+      backdrop-filter: blur(18px);
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .icon-circle {
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 30% 0, #a78bfa, #8b5cf6);
+      box-shadow: 0 0 18px rgba(167, 139, 250, 0.6);
+      color: white;
+      font-size: 22px;
+    }
+    h1 {
+      font-size: 19px;
+      margin: 0;
+      color: #f9fafb;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: #e5e7eb;
+    }
+    .input-wrapper {
+      position: relative;
+      width: 100%;
+    }
+    input[type="password"],
+    input[type="text"] {
+      width: 100%;
+      padding: 11px 40px 11px 12px;
+      border-radius: 10px;
+      border: 1px solid #4b5563;
+      background: rgba(15, 23, 42, 0.9);
+      color: #f9fafb;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+    }
+    input[type="password"]::placeholder,
+    input[type="text"]::placeholder {
+      color: #6b7280;
+    }
+    input[type="password"]:focus,
+    input[type="text"]:focus {
+      border-color: #a78bfa;
+      box-shadow: 0 0 0 1px rgba(167,139,250,0.4);
+      background: rgba(15, 23, 42, 0.98);
+    }
+    .toggle-password {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px;
+      height: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+    .toggle-password:hover {
+      background: rgba(148,163,184,0.15);
+    }
+    .toggle-password svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: #9ca3af;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .hint {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 4px;
+      margin-bottom: 12px;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+      margin-bottom: 16px;
+    }
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .status-chip {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      border: 1px solid rgba(148,163,184,0.4);
+      color: #e5e7eb;
+      background: rgba(15,23,42,0.7);
+    }
+    .status-circle {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background-color: #6b7280;
+      box-shadow: 0 0 0 0 rgba(22,163,74,0);
+      transition: background-color 0.3s, box-shadow 0.4s;
+    }
+    .status-text {
+      font-size: 12px;
+      color: #9ca3af;
+    }
+    .status-circle.idle { background-color: #6b7280; }
+    .status-circle.pairing { 
+      background-color: #fbbf24;
+      box-shadow: 0 0 10px rgba(251,191,36,0.6);
+    }
+    .status-circle.waiting { 
+      background-color: #3b82f6;
+      box-shadow: 0 0 10px rgba(59,130,246,0.6);
+    }
+    .status-circle.paired {
+      background-color: #22c55e;
+      box-shadow: 0 0 12px rgba(34,197,94,0.7);
+    }
+    .status-circle.error {
+      background-color: #ef4444;
+      box-shadow: 0 0 12px rgba(239,68,68,0.7);
+    }
+    button {
+      width: 100%;
+      margin-top: 4px;
+      padding: 11px 12px;
+      border-radius: 999px;
+      border: none;
+      outline: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      color: #0b1120;
+      background: linear-gradient(135deg, #a78bfa, #8b5cf6);
+      box-shadow:
+        0 10px 22px rgba(139,92,246,0.35),
+        0 0 0 1px rgba(167,139,250,0.3);
+      transition: transform 0.1s, box-shadow 0.1s, opacity 0.2s, background 0.2s;
+    }
+    button:hover:enabled {
+      transform: translateY(-1px);
+      box-shadow:
+        0 16px 30px rgba(139,92,246,0.4),
+        0 0 0 1px rgba(167,139,250,0.4);
+    }
+    button:active:enabled {
+      transform: translateY(0px);
+      box-shadow:
+        0 8px 18px rgba(139,92,246,0.3),
+        0 0 0 1px rgba(167,139,250,0.4);
+    }
+    button:disabled {
+      cursor: default;
+      opacity: 0.65;
+      box-shadow: none;
+      background: linear-gradient(135deg, #6b7280, #4b5563);
+      color: #e5e7eb;
+    }
+    .footer {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(148,163,184,0.3);
+    }
+    .device-id {
+      font-family: 'Courier New', monospace;
+      font-size: 10px;
+      color: #6b7280;
+      margin-top: 8px;
+      padding: 4px 8px;
+      background: rgba(15,23,42,0.5);
+      border-radius: 6px;
+      border: 1px solid rgba(148,163,184,0.2);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <div class="icon-circle">📡</div>
+      <div>
+        <h1>Emparejamiento Heltec LoRa</h1>
+        <div class="subtitle">
+          Deriva la clave y empareja este nodo con el gateway vía LoRa.
+        </div>
+      </div>
+    </div>
+
+    <label for="password">Contraseña (misma que el gateway)</label>
+    <div class="input-wrapper">
+      <input type="password" id="password" placeholder="Mínimo 8 caracteres" minlength="8" />
+      <div class="toggle-password" id="togglePassword">
+        <!-- Ojo cerrado -->
+        <svg id="eyeOff" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+          <line x1="1" y1="1" x2="23" y2="23"></line>
+        </svg>
+        <!-- Ojo abierto -->
+        <svg id="eyeOn" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="display:none;">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      </div>
+    </div>
+    <div class="hint">
+      Usa la misma contraseña que configuraste en el gateway para derivar la clave AES compartida.
+    </div>
+
+    <div class="status-row">
+      <div class="status-left">
+        <div id="statusCircle" class="status-circle idle"></div>
+        <div class="status-text" id="statusText">Sin emparejar</div>
+      </div>
+      <div class="status-chip" id="statusChip">Estado: Idle</div>
+    </div>
+
+    <button id="submitBtn">Derivar clave y emparejar</button>
+
+    <div class="footer">
+      <div class="pill" id="pairInfo">No emparejado</div>
+      <div>Nodo Heltec · Modo provisioning</div>
+    </div>
+
+  </div>
+
+  <script>
+    const passwordInput = document.getElementById('password');
+    const submitBtn     = document.getElementById('submitBtn');
+    const statusCircle  = document.getElementById('statusCircle');
+    const statusText    = document.getElementById('statusText');
+    const statusChip    = document.getElementById('statusChip');
+    const pairInfo      = document.getElementById('pairInfo');
+    const deviceIdEl    = document.getElementById('deviceId');
+    const togglePassword = document.getElementById('togglePassword');
+    const eyeOff        = document.getElementById('eyeOff');
+    const eyeOn         = document.getElementById('eyeOn');
+
+    let statusInterval = null;
+    let pairedOnce     = false;
+
+    // Toggle mostrar/ocultar contraseña
+    togglePassword.addEventListener('click', () => {
+      if (passwordInput.type === 'password') {
+        passwordInput.type = 'text';
+        eyeOff.style.display = 'none';
+        eyeOn.style.display = 'block';
+      } else {
+        passwordInput.type = 'password';
+        eyeOff.style.display = 'block';
+        eyeOn.style.display = 'none';
+      }
+    });
+
+    function setStatus(mode, text) {
+      // mode: "idle" | "pairing" | "waiting" | "paired" | "error"
+      statusCircle.className = 'status-circle ' + mode;
+
+      if (text) {
+        statusText.textContent = text;
+      }
+
+      switch (mode) {
+        case 'idle':
+          statusChip.textContent = 'Estado: Idle';
+          break;
+        case 'pairing':
+          statusChip.textContent = 'Estado: Derivando clave...';
+          break;
+        case 'waiting':
+          statusChip.textContent = 'Estado: Esperando ACK LoRa';
+          break;
+        case 'paired':
+          statusChip.textContent = 'Estado: Emparejado';
+          break;
+        case 'error':
+          statusChip.textContent = 'Estado: Error';
+          break;
+      }
+    }
+
+    function setButtonLoading(loading) {
+      if (loading) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Emparejando...';
+      } else {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Derivar clave y emparejar';
+      }
+    }
+
+    submitBtn.addEventListener('click', () => {
+      const pw = passwordInput.value.trim();
+      if (pw.length < 8) {
+        alert('La contraseña debe tener al menos 8 caracteres');
+        return;
+      }
+
+      setButtonLoading(true);
+      setStatus('pairing', 'Derivando clave AES...');
+
+      fetch('/pair', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'password=' + encodeURIComponent(pw)
+      })
+      .then(res => {
+        if (!res.ok) throw new Error('Error en el servidor');
+        return res.text();
+      })
+      .then(() => {
+        // El resultado real llegará vía /status
+      })
+      .catch(() => {
+        alert('Error al enviar la contraseña al nodo');
+        setButtonLoading(false);
+        setStatus('error', 'Error al enviar la contraseña');
+      });
+    });
+
+    function updateStatus() {
+      fetch('/status')
+        .then(res => res.json())
+        .then(data => {
+          // data: { state: "waiting" | "pairing" | "paired" | "failed" }
+          const st = data.state;
+
+          if (st === 'paired') {
+            setStatus('paired', 'Emparejado con gateway correctamente');
+            setButtonLoading(false);
+            pairInfo.textContent = 'Emparejado vía LoRa';
+            pairedOnce = true;
+            if (statusInterval) clearInterval(statusInterval);
+          } else if (st === 'failed') {
+            setStatus('error', 'Error al emparejar, clave distinta');
+            setButtonLoading(false);
+            pairInfo.textContent = 'Error en emparejamiento';
+          } else if (st === 'pairing') {
+            setStatus('pairing', 'Derivando clave AES...');
+            setButtonLoading(true);
+            pairInfo.textContent = 'Derivando...';
+          } else if (st === 'waiting') {
+            setStatus('waiting', 'Clave derivada, esperando ACK del gateway');
+            setButtonLoading(true);
+            pairInfo.textContent = 'Esperando ACK LoRa';
+          } else {
+            // idle u otro
+            setStatus('idle', 'Sin emparejar');
+            setButtonLoading(false);
+            pairInfo.textContent = 'No emparejado';
+          }
+        })
+        .catch(() => {
+          // Si se apaga el AP tras emparejarse, es normal que falle
+          if (!pairedOnce) {
+            setStatus('error', 'Sin respuesta del nodo');
+          }
+          setButtonLoading(false);
+        });
+    }
+
+    statusInterval = setInterval(updateStatus, 1500);
+    updateStatus();
+  </script>
+</body>
+</html>
