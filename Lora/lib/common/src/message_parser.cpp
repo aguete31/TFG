@@ -1,191 +1,170 @@
 #include "message_parser.h"
-#include "hex_utils.h"
-#include "aad_utils.h"
 #include "crypto.h"
-#include "crc.h"
 #include <stdlib.h>
-#include <ArduinoJson.h>
 
-/**
- * @brief Verifica el CRC del JsonDocument contra el CRC recibido (en hex).
- *
- * Detalles:
- *  - El parámetro `doc` es modificado temporalmente (se elimina "crc") y luego restaurado.
- *  - Se asume que crcRecvStr está en formato hexadecimal (p. ej. "1A2B").
- */
-bool verifyCRC(JsonDocument &doc, const String &crcRecvStr)
+
+// ----------------------------------------
+// ------ Formato de recepcion binaria ----
+// ----------------------------------------
+bool parseDataMessageBinary(const uint8_t *packet, size_t packetLen, LoRaMessage &msg)
 {
-  // remove crc
-  doc.remove("crc");
-
-  String dataToCheck;
-  serializeJson(doc, dataToCheck);
-
-  uint16_t crcCalc = calcCRC16(dataToCheck);
-  uint16_t crcRecv = (uint16_t)strtol(crcRecvStr.c_str(), NULL, 16);
-
-  // restore
-  doc["crc"] = crcRecvStr;
-
-  return (crcCalc == crcRecv);
-}
-
-/**
- * @brief Parsea un mensaje de datos JSON, verifica CRC y descifra payload.
- *
- * Notas de implementacion:
- *  - Se usa DynamicJsonDocument de 768 bytes; ajustar si hay problemas de memoria.
- *  - Se reservan buffers con malloc para ciphertext y plaintext si hay datos cifrados.
- *  - Si cipherLen==0, se crea plaintext de 1 byte con '\0'.
- *  - Después de convertir hex->bytes, se construye AAD y se llama a aes_gcm_decrypt.
- *  - En caso de fallo (JSON, CRC, malloc, hexToBytes, decrypt) se libera memoria y retorna false.
- *
- * @param jsonStr JSON entrante
- * @param msg     Estructura LoRaMessage donde se guardan seq, retry, type, crc, iv, tag, payload (plaintext)
- * @return true si parse y decrypt son correctos; false en caso contrario
- */
-bool parseDataMessage_JSON(const String &jsonStr, LoRaMessage &msg)
-{
-  DynamicJsonDocument doc(768);
-  DeserializationError error = deserializeJson(doc, jsonStr);
-  if (error)
+  // -----------------------------------------------------
+  // Validaciones básicas
+  // -----------------------------------------------------
+  if (packet == nullptr)
   {
-    Serial.printf("parseDataMessage_JSON: JSON parse error: %s\n", error.c_str());
+    Serial.println("parseDataMessageBinary: paquete nulo");
     return false;
   }
 
-  msg.seq = doc["seq"] | 0;
-  msg.retry = doc["retry"] | 0;
-  msg.type = doc["type"] | "";
-  msg.deviceId = doc["deviceId"] | "";
-  msg.crc = doc["crc"] | "";
-  msg.iv = doc["iv"] | "";
-  msg.tag = doc["tag"] | "";
-  String cipherHex = doc["payload"] | "";
+  // Tamaño mínimo:
+  // HEADER + IV + TAG
+  const size_t minimumSize = LORA_HEADER_SIZE + AES_IV_SIZE + AES_TAG_SIZE;
 
-  if (!verifyCRC(doc, msg.crc))
+  if (packetLen < minimumSize || packetLen > LORA_MAX_PACKET_SIZE)
   {
-    Serial.printf("parseDataMessage_JSON: CRC failed seq=%lu\n", (unsigned long)msg.seq);
+    Serial.printf("parseDataMessageBinary: longitud inválida (%u bytes)\n", (unsigned int)packetLen);
     return false;
   }
 
-  size_t cipherLen = cipherHex.length() / 2;
-  uint8_t iv[AES_IV_SIZE];
-  uint8_t tag[AES_TAG_SIZE];
-  uint8_t *ciphertext = nullptr;
-  uint8_t *plaintext = nullptr;
+  // -----------------------------------------------------
+  // Parsear cabecera
+  // -----------------------------------------------------
+  LoRaBinaryHeader header;
 
-  if (!hexToBytes(msg.iv, iv, AES_IV_SIZE))
-    return false;
-  if (!hexToBytes(msg.tag, tag, AES_TAG_SIZE))
-    return false;
-
-  if (cipherLen > 0)
+  if (!parseBinaryHeader(packet, packetLen, header))
   {
-    ciphertext = (uint8_t *)malloc(cipherLen);
-    plaintext = (uint8_t *)malloc(cipherLen + 1);
-    if (!ciphertext || !plaintext)
-    {
-      if (ciphertext)
-        free(ciphertext);
-      if (plaintext)
-        free(plaintext);
-      Serial.println("parseDataMessage_JSON: malloc failed");
-      return false;
-    }
-    if (!hexToBytes(cipherHex, ciphertext, cipherLen))
-    {
-      free(ciphertext);
-      free(plaintext);
-      return false;
-    }
-  }
-  else
-  {
-    plaintext = (uint8_t *)malloc(1);
-    if (!plaintext)
-      return false;
-    plaintext[0] = '\0';
+    Serial.println("parseDataMessageBinary: cabecera inválida");
+    return false;
   }
 
-  uint8_t aad[12];
-  size_t aad_len = 0;
-  build_aad(msg.seq, TYPE_CODE_DATA, msg.retry, msg.deviceId, aad, &aad_len);
+  // Esta función solamente acepta DATA
+  if (header.type != LORA_TYPE_DATA)
+  {
+    Serial.println("parseDataMessageBinary: tipo no es DATA");
+    return false;
+  }
 
-  bool ok = aes_gcm_decrypt(ciphertext ? ciphertext : (const uint8_t *)"", cipherLen, AES_KEY,
-                            iv, AES_IV_SIZE, aad, aad_len, tag, plaintext);
+  // -----------------------------------------------------
+  // Calcular posiciones
+  // -----------------------------------------------------
+  const size_t ivOffset = LORA_HEADER_SIZE;
+  const size_t ciphertextOffset = ivOffset + AES_IV_SIZE;
+  const size_t tagOffset = packetLen - AES_TAG_SIZE;
+  const size_t ciphertextLen = tagOffset - ciphertextOffset;
+  const uint8_t *iv = &packet[ivOffset];
+  const uint8_t *ciphertext = &packet[ciphertextOffset];
+  const uint8_t *tag = &packet[tagOffset];
+
+  // -----------------------------------------------------
+  // Reservar plaintext
+  // -----------------------------------------------------
+  uint8_t *plaintext = (uint8_t *)malloc(ciphertextLen + 1);
+
+  if (!plaintext)
+  {
+    Serial.println("parseDataMessageBinary: malloc failed");
+    return false;
+  }
+
+  // -----------------------------------------------------
+  // AES-GCM
+  // -----------------------------------------------------
+  bool ok = aes_gcm_decrypt(ciphertextLen > 0 ? ciphertext : reinterpret_cast<const uint8_t *>(""), ciphertextLen, AES_KEY, iv, AES_IV_SIZE, packet, LORA_HEADER_SIZE, tag, plaintext);
+
   if (!ok)
   {
-    Serial.printf("parseDataMessage_JSON: decrypt/auth failed seq=%lu\n", (unsigned long)msg.seq);
-    if (ciphertext)
-      free(ciphertext);
-    if (plaintext)
-      free(plaintext);
+    Serial.printf("parseDataMessageBinary: autenticación fallida seq=%lu\n", (unsigned long)header.seq);
+
+    free(plaintext);
     return false;
   }
 
-  if (cipherLen > 0)
-    plaintext[cipherLen] = '\0';
-  msg.payload = String((char *)plaintext);
+  // El payload que ciframos es texto JSON,
+  // por lo que añadimos terminador.
+  plaintext[ciphertextLen] = '\0';
 
-  if (ciphertext)
-    free(ciphertext);
-  if (plaintext)
-    free(plaintext);
+  // -----------------------------------------------------
+  // Rellenar estructura existente
+  // -----------------------------------------------------
+  msg.seq = header.seq;
+  msg.deviceId = header.deviceId;
+  msg.payload = String(reinterpret_cast<char *>(plaintext));
+
+  free(plaintext);
+
+  Serial.printf("DATA BINARIO OK: seq=%lu deviceId=%s payload=%u bytes\n", (unsigned long)msg.seq, msg.deviceId.c_str(), (unsigned int)ciphertextLen);
   return true;
 }
 
-/**
- * @brief Parsea y valida un ACK: verifica CRC, convierte iv/tag y valida autenticidad con AES-GCM.
- *
- * Notas:
- *  - La verificación de autenticidad se hace llamando a aes_gcm_decrypt con payload vacío.
- *  - Si la verificación falla, retorna false.
- */
-bool parseAckMessage_JSON(const String &jsonStr, LoRaAck &ack)
+
+
+// ----------------------------------------
+// -------- Formato de ACK binaria --------
+// ----------------------------------------
+bool parseAckMessageBinary(const uint8_t *packet, size_t packetLen, LoRaAck &ack)
 {
-  DynamicJsonDocument doc(256);
-  DeserializationError error = deserializeJson(doc, jsonStr);
-  if (error)
+  // -----------------------------------------------------
+  // Validaciones básicas
+  // -----------------------------------------------------
+  if (packet == nullptr)
   {
-    Serial.printf("parseAckMessage_JSON: JSON parse error: %s\n", error.c_str());
+    Serial.println("parseAckMessageBinary: paquete nulo");
     return false;
   }
 
-  ack.seq = doc["seq"] | 0;
-  ack.type = doc["type"] | "";
-  ack.deviceId = doc["deviceId"] | "";
-  ack.crc = doc["crc"] | "";
+  const size_t expectedSize = LORA_HEADER_SIZE + AES_IV_SIZE + AES_TAG_SIZE;
 
-  if (!verifyCRC(doc, ack.crc))
+  if (packetLen != expectedSize)
   {
-    Serial.printf("parseAckMessage_JSON: CRC failed ack=%lu\n", (unsigned long)ack.seq);
+    Serial.printf("parseAckMessageBinary: longitud inválida (%u != %u bytes)\n", (unsigned int)packetLen, (unsigned int)expectedSize);
     return false;
   }
 
-  String ivHex = doc["iv"] | "";
-  String tagHex = doc["tag"] | "";
+  // -----------------------------------------------------
+  // Parsear cabecera
+  // -----------------------------------------------------
+  LoRaBinaryHeader header;
 
-  uint8_t iv[AES_IV_SIZE];
-  uint8_t tag[AES_TAG_SIZE];
-
-  if (!hexToBytes(ivHex, iv, AES_IV_SIZE))
+  if (!parseBinaryHeader(packet, packetLen, header))
+  {
+    Serial.println("parseAckMessageBinary: cabecera inválida");
     return false;
-  if (!hexToBytes(tagHex, tag, AES_TAG_SIZE))
+  }
+
+  if (header.type != LORA_TYPE_ACK)
+  {
+    Serial.println("parseAckMessageBinary: tipo no es ACK");
     return false;
+  }
 
-  uint8_t aad[12];
-  size_t aad_len = 0;
-  build_aad(ack.seq, TYPE_CODE_ACK, 0, ack.deviceId, aad, &aad_len);
+  // -----------------------------------------------------
+  // Localizar IV y TAG
+  // -----------------------------------------------------
+  const size_t ivOffset = LORA_HEADER_SIZE;
+  const size_t tagOffset = ivOffset + AES_IV_SIZE;
+  const uint8_t *iv = &packet[ivOffset];
+  const uint8_t *tag = &packet[tagOffset];
 
-  uint8_t dummy_out[1];
-  bool ok = aes_gcm_decrypt((const uint8_t *)"", 0, AES_KEY, iv, AES_IV_SIZE,
-                            aad, aad_len, tag, dummy_out);
+  // -----------------------------------------------------
+  // Verificar autenticación AES-GCM
+  // -----------------------------------------------------
+  uint8_t dummyOut[1] = {0};
+
+  bool ok = aes_gcm_decrypt(reinterpret_cast<const uint8_t *>(""), 0, AES_KEY, iv, AES_IV_SIZE, packet, LORA_HEADER_SIZE, tag, dummyOut);
+
   if (!ok)
   {
-    Serial.printf("parseAckMessage_JSON: auth failed ack=%lu\n", (unsigned long)ack.seq);
+    Serial.printf("parseAckMessageBinary: autenticación fallida seq=%lu\n", (unsigned long)header.seq);
     return false;
   }
 
+  // -----------------------------------------------------
+  // Rellenar estructura existente
+  // -----------------------------------------------------
+  ack.seq = header.seq;
+  ack.deviceId = header.deviceId;
+
+  Serial.printf("ACK BINARIO OK: seq=%lu deviceId=%s\n", (unsigned long)ack.seq, ack.deviceId.c_str());
   return true;
 }

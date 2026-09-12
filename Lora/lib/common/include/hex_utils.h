@@ -19,3 +19,11 @@ String bytesToHex(const uint8_t* data, size_t len);
  * @return true si la conversión fue exitosa, false si hay error
  */
 bool hexToBytes(const String& hexStr, uint8_t* outBytes, size_t maxLen);
+
+/**
+ * @brief Comprueba si una cadena contiene únicamente caracteres hexadecimales.
+ *
+ * @param hexStr Cadena a validar.
+ * @return true si todos los caracteres son 0-9, A-F o a-f.
+ */
+bool isValidHex(const String &hexStr);

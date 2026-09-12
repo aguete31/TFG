@@ -1,52 +1,142 @@
 #pragma once
 #include <Arduino.h>
-#include <ArduinoJson.h>
+
+// =========================================================
+// PROTOCOLO LORA BINARIO
+// =========================================================
+
+// Versión actual del protocolo
+static constexpr uint8_t LORA_PROTOCOL_VERSION = 1;
+
+// Tipos de mensaje
+static constexpr uint8_t LORA_TYPE_DATA = 0x01;
+static constexpr uint8_t LORA_TYPE_ACK  = 0x02;
+
+// Tamaños fijos de los campos
+static constexpr size_t DEVICE_ID_SIZE = 6;
+static constexpr size_t SEQ_SIZE       = 4;
+
+// Tamaño máximo de payload permitido por el SX127x / librería LoRa
+static constexpr size_t LORA_MAX_PACKET_SIZE = 255;
+
+// Posiciones de los campos dentro de la cabecera binaria
+static constexpr size_t OFFSET_VERSION   = 0;
+static constexpr size_t OFFSET_TYPE      = 1;
+static constexpr size_t OFFSET_SEQ       = 2;
+static constexpr size_t OFFSET_DEVICE_ID = 6;
+
+// Tamaño total de la cabecera:
+// version(1) + type(1) + seq(4) + deviceId(6)
+static constexpr size_t LORA_HEADER_SIZE = 12;
 
 /**
  * @brief Estructura que representa un mensaje de datos LoRa.
- *
- * Campos:
- *  - seq: número de secuencia del paquete (uint32_t).
- *  - retry: contador de reintentos asociado al envío (uint8_t).
- *  - type: tipo de mensaje en texto ("data" esperado).
- *  - deviceId: identificador unico del dispositivo emisor, en hex
- *              (derivado de la MAC del ESP32)
- *  - payload: payload en texto plano ya descifrado (llenado por el parser).
- *  - crc: CRC en hex presente en el JSON recibido/enviado.
- *  - iv: IV del AES en formato hex (incluido en el JSON).
- *  - tag: tag de autenticación AES-GCM en formato hex.
  */
 struct LoRaMessage {
   uint32_t seq;
-  uint8_t retry;
-  String type;
   String deviceId;
   String payload;
-  String crc;
-  String iv;
-  String tag;
 };
 
 /**
  * @brief Estructura que representa un ACK LoRa.
- *
- * Campos:
- *  - seq: número de secuencia confirmado.
- *  - type: tipo de mensaje ("ack").
- *  - deviceId: identificador del dispositivo que envia el ACK
- *              (normalmente el gateway)
- *  - crc: CRC en hex presente en el JSON del ACK.
- *  - iv: IV en hex usado para autenticar el ACK.
- *  - tag: tag AES-GCM en hex para verificar autenticidad.
  */
 struct LoRaAck {
   uint32_t seq;
-  String type;
   String deviceId;
-  String crc;
-  String iv;
-  String tag;
 };
+
+struct LoRaBinaryHeader
+{
+  uint8_t version;
+  uint8_t type;
+  uint32_t seq;
+  String deviceId;
+};
+
+
+/**
+* @brief Escribe un uint32_t en formato big-endian.
+*/
+void writeUint32BE(uint8_t *buffer, uint32_t value);
+
+/**
+* @brief Lee un uint32_t almacenado en formato big-endian.
+*/
+uint32_t readUint32BE(const uint8_t *buffer);
+
+/**
+* @brief Convierte un deviceId hexadecimal de 12 caracteres
+*        en 6 bytes binarios.
+*
+* @param deviceIdHex ID hexadecimal, por ejemplo "14C281E350CC".
+* @param outBytes Buffer de salida de DEVICE_ID_SIZE bytes.
+* @return true si el ID es válido y pudo convertirse.
+*/
+bool writeDeviceIdBytes(const String &deviceIdHex, uint8_t *outBytes);
+
+/**
+* @brief Convierte un deviceId binario de 6 bytes
+*        a su representación hexadecimal.
+*
+* @param bytes Buffer de DEVICE_ID_SIZE bytes.
+* @return ID hexadecimal de 12 caracteres.
+*/
+String readDeviceIdHex(const uint8_t *bytes);
+
+/**
+* @brief Construye la cabecera binaria común de un paquete LoRa.
+*
+* Formato:
+*  byte 0     : versión del protocolo
+*  byte 1     : tipo de mensaje
+*  bytes 2-5  : número de secuencia (big-endian)
+*  bytes 6-11 : deviceId (6 bytes)
+*
+* @param type Tipo de mensaje (LORA_TYPE_DATA o LORA_TYPE_ACK).
+* @param seq Número de secuencia.
+* @param deviceIdHex ID hexadecimal del dispositivo (12 caracteres).
+* @param outHeader Buffer donde se escribirá la cabecera.
+* @param outSize Tamaño disponible en outHeader.
+* @return true si la cabecera se construyó correctamente.
+*/
+bool buildBinaryHeader(uint8_t type, uint32_t seq, const String &deviceIdHex, uint8_t *outHeader, size_t outSize);
+
+/**
+* @brief Parsea una cabecera binaria LoRa.
+*
+* Formato:
+*  byte 0     : versión del protocolo
+*  byte 1     : tipo de mensaje
+*  bytes 2-5  : número de secuencia (big-endian)
+*  bytes 6-11 : deviceId (6 bytes)
+*
+* @param buffer Buffer recibido.
+* @param len Longitud disponible en el buffer.
+* @param header Estructura donde se guardarán los campos.
+* @return true si la cabecera es válida.
+*/
+bool parseBinaryHeader(const uint8_t *buffer, size_t len, LoRaBinaryHeader &header);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /**
  * @brief Clase de conveniencia que agrupa las funciones del protocolo.
@@ -58,46 +148,31 @@ class LoRaProtocol {
 public:
 
   /**
-   * @brief Crea un JSON de mensaje de datos (envolviendo createDataMessage_JSON).
-   * @param seq Número de secuencia.
-   * @param retry Contador de reintentos.
-   * @param deviceId Identificador del dispositivo emisor en hex.
-   * @param payload Texto plano a cifrar.
-   * @return String JSON listo para enviar.
-   */
-  static String createDataMessage(uint32_t seq, uint8_t retry, const String& deviceId, const String& payload);
+  * @brief Crea un mensaje DATA binario compacto.
+  *
+  * @param seq Número de secuencia.
+  * @param deviceId Identificador hexadecimal del dispositivo.
+  * @param payload Payload en texto plano que será cifrado.
+  * @param outPacket Buffer de salida.
+  * @param outCapacity Capacidad del buffer.
+  * @param outLen Longitud real generada.
+  * @return true si el mensaje se creó correctamente.
+  */
+  static bool createDataMessageBinary(uint32_t seq, const String &deviceId, const String &payload, uint8_t *outPacket, size_t outCapacity, size_t &outLen);
 
   /**
-   * @brief Crea un JSON de ACK autenticado (envolviendo createAckMessage_JSON).
-   * @param seq Número de secuencia confirmado.
-   * @param deviceId Identificador del dispositivo que envia el ACK.
-   * @return String JSON del ACK.
-   */
-  static String createAckMessage(uint32_t seq, const String& deviceId);
+  * @brief Crea un ACK binario compacto.
+  */
+  static bool createAckMessageBinary(uint32_t seq, const String &deviceId, uint8_t *outPacket, size_t outCapacity, size_t &outLen);
 
   /**
-   * @brief Parsea un JSON de mensaje de datos y rellena una LoRaMessage.
-   * @param jsonStr JSON entrante.
-   * @param msg Referencia a la estructura LoRaMessage que se rellenará.
-   * @return true si parse y verificación/descifrado fueron correctos.
-   */
-  static bool parseMessage(const String& jsonStr, LoRaMessage& msg);
+  * @brief Parsea y descifra un mensaje DATA binario.
+  */
+  static bool parseMessageBinary(const uint8_t *packet, size_t packetLen, LoRaMessage &msg);
 
   /**
-   * @brief Parsea un JSON de ACK y rellena una LoRaAck.
-   * @param jsonStr JSON del ACK.
-   * @param ack Referencia a la estructura LoRaAck que se rellenará.
-   * @return true si el ACK es válido y autenticado.
-   */
-  static bool parseAck(const String& jsonStr, LoRaAck& ack);
+  * @brief Parsea y autentica un ACK binario.
+  */
+  static bool parseAckBinary(const uint8_t *packet, size_t packetLen, LoRaAck &ack);
 
-  /**
-   * @brief Wrapper para verificación de CRC en un JsonDocument.
-   * 
-   * Nota: delega la verificación al helper verifyCRC definido en message_parser.
-   * @param doc JsonDocument ya deserializado.
-   * @param crcRecv CRC recibido en formato hexadecimal.
-   * @return true si el CRC calculado coincide con crcRecv.
-   */
-  static bool verifyCRC(JsonDocument& doc, const String& crcRecv);
 };

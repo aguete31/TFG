@@ -41,16 +41,31 @@ static void addToBuffer(const String &deviceId, uint32_t seq)
 }
 
 // ==================== Gestión de ACK LoRa ====================
-
 static void sendAck(uint32_t seq)
 {
-  String jsonStr = LoRaProtocol::createAckMessage(seq, g_device_id);
+  uint8_t packet[LORA_MAX_PACKET_SIZE];
+  size_t packetLen = 0;
+
+  bool ok = LoRaProtocol::createAckMessageBinary(seq, g_device_id, packet, sizeof(packet), packetLen);
+
+  if (!ok)
+  {
+    Serial.println("ACK cancelado: no se pudo construir ACK binario");
+    return;
+  }
 
   LoRa.beginPacket();
-  LoRa.print(jsonStr);
-  LoRa.endPacket();
+  LoRa.write(packet, packetLen);
 
-  Serial.printf("ACK sent [%u] (%d bytes)\n", seq, jsonStr.length());
+  int result = LoRa.endPacket();
+
+  if (result != 1)
+  {
+    Serial.println("ACK binario: error en LoRa.endPacket()");
+    return;
+  }
+
+  Serial.printf("ACK BIN sent [%lu] (%u bytes)\n", (unsigned long)seq, (unsigned int)packetLen);
 }
 
 // ==================== API ====================
@@ -60,32 +75,36 @@ void lora_handler_init(const String &deviceId)
   g_device_id = deviceId;
 }
 
-void lora_handle_message(const String &msgStr, int rssi, float snr)
+
+void lora_handle_binary_packet(const uint8_t *packet, size_t packetLen, int rssi, float snr)
 {
   LoRaMessage msg;
 
-  if (!LoRaProtocol::parseMessage(msgStr, msg))
+  if (!LoRaProtocol::parseMessageBinary(packet, packetLen, msg))
   {
-    // Mensaje no válido
+    // Trama binaria inválida
     return;
   }
 
-  Serial.printf("Message from deviceId: %s\n", msg.deviceId.c_str());
+  Serial.printf("Message BIN from deviceId: %s\n", msg.deviceId.c_str());
 
   if (isDuplicate(msg.deviceId, msg.seq))
   {
-    Serial.printf("DUPLICATE [%u] from %s: resending ACK\n", msg.seq, msg.deviceId.c_str());
+    Serial.printf("DUPLICATE BIN [%lu] from %s\n", (unsigned long)msg.seq, msg.deviceId.c_str());
 
+    // De momento seguimos enviando ACK JSON
     sendAck(msg.seq);
     return;
   }
 
-  addToBuffer(msg.deviceId, msg.seq);
+  addToBuffer(msg.deviceId,msg.seq);
 
-  Serial.printf("RX [%u] retry=%u from deviceId=%s: %s | RSSI=%d SNR=%.1f\n", msg.seq, msg.retry, msg.deviceId.c_str(), msg.payload.c_str(), rssi, snr);
+  Serial.printf("RX BIN [%lu] from deviceId=%s: %s | RSSI=%d SNR=%.1f\n", (unsigned long)msg.seq, msg.deviceId.c_str(), msg.payload.c_str(), rssi, snr);
+
+  // De momento el ACK real sigue siendo JSON
   sendAck(msg.seq);
 
-  // Almacén de datos para caso de HA apagado
+  // Guardar telemetría exactamente igual que con JSON
   TelemetryData data;
   data.timestamp = gateway_time_now();
   data.deviceId = msg.deviceId;
@@ -95,6 +114,13 @@ void lora_handle_message(const String &msgStr, int rssi, float snr)
 
   saveTelemetryData(data);
 
-  // Último dato para respuesta simple de /telemetry (sin from_ts)
-  http_set_last_telemetry(data.timestamp, msg.retry, msg.deviceId, msg.payload, rssi, snr);
+  // En el protocolo binario ya no existe retry.
+  // Usamos 0 mientras esta API antigua siga esperando ese campo.
+  http_set_last_telemetry(
+      data.timestamp,
+      0,
+      msg.deviceId,
+      msg.payload,
+      rssi,
+      snr);
 }

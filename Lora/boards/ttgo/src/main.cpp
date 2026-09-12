@@ -204,7 +204,7 @@ void setup()
   // Inicializar LoRa (radio)
   // ---------------------------------------------------------------------------
   lora_begin_basic();
-  Serial.println("TTGO GATEWAY ROBUST MODE (JSON)");
+  Serial.println("TTGO GATEWAY ROBUST MODE (BINARY V1)");
 
   // Inicio del buffer para almacenar datos no enviados
   initTelemetryBuffer();
@@ -267,19 +267,43 @@ void loop()
   // Recepción de paquetes LoRa
   // ---------------------------------------------------------------------------
   int pkt = LoRa.parsePacket();
+
   if (pkt)
   {
-    String msgStr;
-    while (LoRa.available())
+    uint8_t packet[LORA_MAX_PACKET_SIZE];
+    size_t packetLen = 0;
+
+    // Leer todos los bytes recibidos
+    while (LoRa.available() && packetLen < LORA_MAX_PACKET_SIZE)
     {
-      msgStr += static_cast<char>(LoRa.read());
+      packet[packetLen++] = static_cast<uint8_t>(LoRa.read());
     }
 
     int rssi = LoRa.packetRssi();
     float snr = LoRa.packetSnr();
 
-    // delegar toda la lógica de protocolo/ACK/HTTP al handler
-    lora_handle_message(msgStr, rssi, snr);
+    if (packetLen == 0)
+    {
+      Serial.println("LoRa: paquete vacío recibido");
+    }
+
+    // -----------------------------------------------------
+    // PROTOCOLO BINARIO V1
+    // -----------------------------------------------------
+
+    if (packet[OFFSET_VERSION] == LORA_PROTOCOL_VERSION)
+    {
+      lora_handle_binary_packet(packet, packetLen, rssi, snr);
+    }
+
+    // -----------------------------------------------------
+    // FORMATO DESCONOCIDO
+    // -----------------------------------------------------
+
+    else
+    {
+      Serial.printf("LoRa: formato desconocido, primer byte=0x%02X, longitud=%u\n", packet[0], (unsigned int)packetLen);
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -1,138 +1,151 @@
 #include "message_builder.h"
-#include "hex_utils.h"
-#include "aad_utils.h"
 #include "iv_generator.h"
 #include "crypto.h"
-#include "crc.h"
-#include <stdlib.h>
-#include <ArduinoJson.h>
+#include "protocol.h"
 
-/**
- * @brief Implementación de createDataMessage_JSON.
- *
- * Comentarios importantes de implementacion:
- *  - payloadLen y payloadBytes se obtienen del String payload.
- *  - iv es un arreglo local de tamaño AES_IV_SIZE y se rellena con generateSecureIV().
- *  - Si payloadLen>0 se reserva (malloc) un buffer ciphertext de la misma longitud.
- *    En AES-GCM el ciphertext tiene la misma longitud que el plaintext.
- *  - tag tiene tamaño AES_TAG_SIZE.
- *  - Se construye el AAD con build_aad(seq, TYPE_CODE_DATA, retry, ...).
- *  - Llamada a aes_gcm_encrypt(...). Si falla, se libera memoria y devuelve "{}".
- *  - Convierte iv/tag/ciphertext a hex con bytesToHex para incrustarlos en JSON.
- *  - Construye DynamicJsonDocument, serializa sin crc, calcula CRC16, añade crc (en hex),
- *    vuelve a serializar y devuelve el String.
- */
-String createDataMessage_JSON(uint32_t seq, uint8_t retry, const String &deviceId, const String &payload)
+
+// ----------------------------------------
+// ---- Formato de transmision binaria ----
+// ----------------------------------------
+bool createDataMessageBinary(uint32_t seq, const String &deviceId, const String &payload, uint8_t *outPacket, size_t outCapacity, size_t &outLen)
 {
-  size_t payloadLen = payload.length();
-  const uint8_t *payloadBytes = (const uint8_t *)payload.c_str();
+  outLen = 0;
 
-  uint8_t iv[AES_IV_SIZE];
-  generateSecureIV(iv);
-
-  uint8_t *ciphertext = nullptr;
-  if (payloadLen > 0)
+  // -----------------------------------------------------
+  // Validaciones iniciales
+  // -----------------------------------------------------
+  if (outPacket == nullptr)
   {
-    ciphertext = (uint8_t *)malloc(payloadLen);
-    if (!ciphertext)
-    {
-      Serial.println("createDataMessage_JSON: malloc failed");
-      return "{}";
-    }
+    Serial.println("createDataMessageBinary: buffer nulo");
+    return false;
   }
-  uint8_t tag[AES_TAG_SIZE];
 
-  uint8_t aad[12];
-  size_t aad_len = 0;
-  build_aad(seq, TYPE_CODE_DATA, retry, deviceId, aad, &aad_len);
+  size_t payloadLen = payload.length();
 
-  bool ok = aes_gcm_encrypt(payloadBytes, payloadLen, AES_KEY, iv, AES_IV_SIZE,
-                            aad, aad_len, ciphertext ? ciphertext : (uint8_t *)"", tag);
+  // Tamaño total:
+  // header + IV + ciphertext + TAG
+  size_t requiredSize = LORA_HEADER_SIZE + AES_IV_SIZE + payloadLen + AES_TAG_SIZE;
+
+  if (requiredSize > outCapacity || requiredSize > LORA_MAX_PACKET_SIZE)
+  {
+    Serial.printf("createDataMessageBinary: paquete demasiado grande (%u bytes)\n", (unsigned int)requiredSize);
+    return false;
+  }
+
+  // -----------------------------------------------------
+  // Construir cabecera
+  // -----------------------------------------------------
+  if (!buildBinaryHeader(LORA_TYPE_DATA, seq, deviceId, outPacket, outCapacity))
+  {
+    Serial.println("createDataMessageBinary: cabecera inválida");
+    return false;
+  }
+
+  // -----------------------------------------------------
+  // Posiciones dentro de la trama
+  // -----------------------------------------------------
+  size_t ivOffset = LORA_HEADER_SIZE;
+  size_t ciphertextOffset = ivOffset + AES_IV_SIZE;
+  size_t tagOffset = ciphertextOffset + payloadLen;
+  uint8_t *iv = &outPacket[ivOffset];
+  uint8_t *ciphertext = &outPacket[ciphertextOffset];
+  uint8_t *tag = &outPacket[tagOffset];
+
+  // -----------------------------------------------------
+  // Generar IV seguro
+  // -----------------------------------------------------
+  if (!generateSecureIV(iv))
+  {
+    Serial.println("createDataMessageBinary: no se pudo generar IV seguro");
+    return false;
+  }
+
+  // -----------------------------------------------------
+  // Cifrado AES-GCM
+  // -----------------------------------------------------
+  const uint8_t *plaintext = reinterpret_cast<const uint8_t *>(payload.c_str());
+
+  bool ok = aes_gcm_encrypt(plaintext, payloadLen, AES_KEY, iv, AES_IV_SIZE, outPacket, LORA_HEADER_SIZE, ciphertext, tag);
+
   if (!ok)
   {
-    Serial.println("createDataMessage_JSON: encrypt failed");
-    if (ciphertext)
-      free(ciphertext);
-    return "{}";
+    Serial.println("createDataMessageBinary: cifrado AES-GCM fallido");
+    return false;
   }
 
-  String ivHex = bytesToHex(iv, AES_IV_SIZE);
-  String tagHex = bytesToHex(tag, AES_TAG_SIZE);
-  String cipherHex = (payloadLen > 0) ? bytesToHex(ciphertext, payloadLen) : String("");
+  // -----------------------------------------------------
+  // Resultado
+  // -----------------------------------------------------
+  outLen = requiredSize;
 
-  DynamicJsonDocument doc(768);
-  doc["seq"] = seq;
-  doc["retry"] = retry;
-  doc["type"] = "data";
-  doc["deviceId"] = deviceId;
-  doc["iv"] = ivHex;
-  doc["tag"] = tagHex;
-  doc["payload"] = cipherHex;
-
-  // Serializar y CRC (sin campo crc)
-  String jsonStr;
-  serializeJson(doc, jsonStr);
-  uint16_t crc = calcCRC16(jsonStr);
-  char crcBuf[8];
-  sprintf(crcBuf, "%04X", crc);
-  doc["crc"] = String(crcBuf);
-
-  jsonStr = "";
-  serializeJson(doc, jsonStr);
-
-  if (ciphertext)
-    free(ciphertext);
-  return jsonStr;
+  Serial.printf("DATA BINARIO LoRa: %u bytes\n", (unsigned int)outLen);
+  return true;
 }
 
-/**
- * @brief Implementación de createAckMessage_JSON.
- *
- * Comentarios importantes:
- *  - Genera IV con generateSecureIV().
- *  - Construye AAD con build_aad(seq, TYPE_CODE_ACK, 0, ...).
- *  - Llama a aes_gcm_encrypt con payload vacío para obtener sólo el tag de autenticación.
- *  - Convierte iv y tag a hex, arma JSON, calcula CRC16 y lo añade en hex.
- *  - Devuelve "{}" en caso de fallo de autenticación/encriptación.
- */
-String createAckMessage_JSON(uint32_t seq, const String &deviceId)
+
+
+// -------------------------------
+// --- Formato de ACK binario ----
+// -------------------------------
+bool createAckMessageBinary(uint32_t seq, const String &deviceId, uint8_t *outPacket, size_t outCapacity, size_t &outLen)
 {
-  uint8_t iv[AES_IV_SIZE];
-  generateSecureIV(iv);
+  outLen = 0;
 
-  uint8_t tag[AES_TAG_SIZE];
-
-  uint8_t aad[6];
-  size_t aad_len = 0;
-  build_aad(seq, TYPE_CODE_ACK, 0, deviceId, aad, &aad_len);
-
-  uint8_t dummy_out[1] = {0};
-  bool ok = aes_gcm_encrypt((const uint8_t *)"", 0, AES_KEY, iv, AES_IV_SIZE,
-                            aad, aad_len, dummy_out, tag);
-  if (!ok)
+  if (outPacket == nullptr)
   {
-    Serial.println("createAckMessage_JSON: auth failed");
-    return "{}";
+    Serial.println("createAckMessageBinary: buffer nulo");
+    return false;
   }
 
-  String ivHex = bytesToHex(iv, AES_IV_SIZE);
-  String tagHex = bytesToHex(tag, AES_TAG_SIZE);
+  const size_t requiredSize = LORA_HEADER_SIZE + AES_IV_SIZE + AES_TAG_SIZE;
 
-  DynamicJsonDocument doc(256);
-  doc["type"] = "ack";
-  doc["deviceId"] = deviceId;
-  doc["seq"] = seq;
-  doc["iv"] = ivHex;
-  doc["tag"] = tagHex;
+  if (requiredSize > outCapacity || requiredSize > LORA_MAX_PACKET_SIZE)
+  {
+    Serial.println("createAckMessageBinary: buffer insuficiente");
+    return false;
+  }
 
-  String jsonStr;
-  serializeJson(doc, jsonStr);
-  uint16_t crc = calcCRC16(jsonStr);
-  char crcBuf[8];
-  sprintf(crcBuf, "%04X", crc);
-  doc["crc"] = String(crcBuf);
+  // -----------------------------------------------------
+  // Cabecera
+  // -----------------------------------------------------
+  if (!buildBinaryHeader(LORA_TYPE_ACK, seq, deviceId, outPacket, outCapacity))
+  {
+    Serial.println("createAckMessageBinary: cabecera inválida");
+    return false;
+  }
 
-  jsonStr = "";
-  serializeJson(doc, jsonStr);
-  return jsonStr;
+  // -----------------------------------------------------
+  // Posiciones
+  // -----------------------------------------------------
+  const size_t ivOffset = LORA_HEADER_SIZE;
+  const size_t tagOffset = ivOffset + AES_IV_SIZE;
+  uint8_t *iv = &outPacket[ivOffset];
+  uint8_t *tag = &outPacket[tagOffset];
+
+  // -----------------------------------------------------
+  // IV único
+  // -----------------------------------------------------
+  if (!generateSecureIV(iv))
+  {
+    Serial.println("createAckMessageBinary: no se pudo generar IV seguro");
+    return false;
+  }
+
+  // -----------------------------------------------------
+  // Autenticación AES-GCM
+  // -----------------------------------------------------
+  uint8_t dummyOut[1] = {0};
+
+  bool ok = aes_gcm_encrypt(reinterpret_cast<const uint8_t *>(""), 0, AES_KEY, iv, AES_IV_SIZE, outPacket, LORA_HEADER_SIZE, dummyOut, tag);
+
+  if (!ok)
+  {
+    Serial.println("createAckMessageBinary: autenticación AES-GCM fallida");
+    return false;
+  }
+
+  outLen = requiredSize;
+
+  Serial.printf("ACK BINARIO LoRa: %u bytes\n", (unsigned int)outLen);
+  return true;
 }
