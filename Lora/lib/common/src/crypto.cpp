@@ -14,9 +14,11 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "esp_timer.h"
+
 // Fallback si no está definido en crypto.h
 #ifndef DEFAULT_PBKDF2_ITERS
-#define DEFAULT_PBKDF2_ITERS 5000
+#define DEFAULT_PBKDF2_ITERS 10000
 #endif
 
 // Definición de la clave AES-128 (tamaño definido en crypto.h)
@@ -86,7 +88,7 @@ bool derive_key_from_password(const String &password, uint8_t *out_key, size_t k
 {
   const char *salt = "LoRaPair-v1"; // Salt fijo / versión del esquema
   const size_t salt_len = strlen(salt);
-  const unsigned int iterations = 5000;
+  const unsigned int iterations = DEFAULT_PBKDF2_ITERS;
 
   if (!out_key || key_len == 0)
     return false;
@@ -131,14 +133,12 @@ bool derive_key_from_password(const String &password, uint8_t *out_key, size_t k
     return false;
   }
 
-  // Ejecutar PBKDF2-HMAC-SHA256 (nota: pasamos &md_ctx)
-  int ret = mbedtls_pkcs5_pbkdf2_hmac(
-      &md_ctx,
-      pw_buf ? pw_buf : (const unsigned char *)"", (size_t)pw_len,
-      (const unsigned char *)salt, salt_len,
-      iterations,
-      (uint32_t)key_len,
-      out_key);
+  // Ejecutar PBKDF2-HMAC-SHA256
+  int64_t startUs = esp_timer_get_time();
+  int ret = mbedtls_pkcs5_pbkdf2_hmac(&md_ctx, pw_buf ? pw_buf : (const unsigned char *)"", (size_t)pw_len, (const unsigned char *)salt, salt_len, iterations, (uint32_t)key_len, out_key);
+  int64_t elapsedUs = esp_timer_get_time() - startUs;
+
+  Serial.printf("PBKDF2: %u iteraciones -> %.2f ms\n", iterations, elapsedUs / 1000.0);
 
   // Borrar y liberar buffer de contraseña
   if (pw_buf)

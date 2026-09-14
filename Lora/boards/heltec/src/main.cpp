@@ -10,6 +10,7 @@
 #include "factory_reset.h"
 #include "sensor_dht.h"
 #include <ArduinoJson.h>
+#include "channel_access.h"
 
 // =========================================================
 // CONFIGURACIÓN GENERAL
@@ -23,8 +24,13 @@
 #define ACK_TIMEOUT 1500UL                     // Tiempo de espera para un ACK (1.5s)
 // #define TX_INTERVAL 300000UL                // Intervalo entre envíos cuando no hay ACK pendiente (5min)
 #define TX_INTERVAL 60000UL                     // Intervalo entre envíos cuando no hay ACK pendiente (1min)
+#define TX_JITTER 5000UL
+
 #define RETRY_BACKOFF_MIN 300UL
 #define RETRY_BACKOFF_MAX 1500UL
+
+#define MAX_CHANNEL_DEFERRALS 3
+
 // =========================================================
 // VARIABLES GLOBALES DEL SISTEMA
 // =========================================================
@@ -34,6 +40,8 @@ uint32_t seq = 0;
 
 // Momento en que se genero la ultima lectura periodica
 unsigned long lastMeasurementAt = 0;
+
+unsigned long nextMeasurementDelay = 0;
 
 // Control espera de ACK
 bool waitingAck = false;
@@ -45,6 +53,10 @@ unsigned long ackStartedAt = 0;
 bool retryPending = false;
 unsigned long retryStartedAt = 0;
 unsigned long retryDelay = 0;
+
+// Número de veces que hemos tenido que aplazar el envío
+// porque CAD encontró el canal ocupado
+uint8_t channelDeferrals = 0;
 
 // Payload en reintentos
 String currentPayload = "";
@@ -76,6 +88,21 @@ String getDeviceIdFromChip()
   char idStr[13];
   snprintf(idStr, sizeof(idStr), "%012llX", chipId);
   return String(idStr);
+}
+
+unsigned long getNextMeasurementDelay()
+{
+  const uint32_t range = (TX_JITTER * 2UL) + 1UL;
+
+  int32_t jitter = (int32_t)(esp_random() % range) - (int32_t)TX_JITTER;
+  int64_t nextDelay = (int64_t)TX_INTERVAL + jitter;
+
+  // Protección por si en el futuro TX_INTERVAL fuese
+  // menor que TX_JITTER.
+  if (nextDelay < 1000)
+    nextDelay = 1000;
+
+  return (unsigned long)nextDelay;
 }
 
 /**
@@ -115,6 +142,7 @@ void processAck(const LoRaAck &ack)
     waitingAck = false;
     retryPending = false;
     txAttempt = 0;
+    channelDeferrals = 0;
     seq++;
 
     bool firstPair = (pairStatus == WAITING);
@@ -161,11 +189,66 @@ void sendMessage(const String &payload)
   // Guardar payload para posibles reintentos
   currentPayload = payload;
 
-  // Buffer para la trama binaria LoRa
+  // =====================================================
+  // CSMA/CA - comprobar canal ANTES de construir la trama
+  // =====================================================
+  if (!waitForFreeChannel())
+  {
+    channelDeferrals++;
+    Serial.printf("CSMA/CA: canal ocupado ronda=%u/%u\n", channelDeferrals, MAX_CHANNEL_DEFERRALS);
+
+    // ---------------------------------------------------
+    // Demasiadas rondas de acceso al canal
+    // ---------------------------------------------------
+    if (channelDeferrals >= MAX_CHANNEL_DEFERRALS)
+    {
+      Serial.printf("CSMA/CA: abandono DATA [%lu], canal ocupado\n", (unsigned long)currentSeq);
+
+      waitingAck = false;
+      retryPending = false;
+      channelDeferrals = 0;
+      txAttempt = 0;
+
+      // Saltamos esta secuencia para no reutilizarla
+      seq++;
+
+      if (pairStatus == WAITING)
+      {
+        Serial.println("Pairing failed: canal LoRa ocupado");
+
+        tx_enabled = false;
+        pairStatus = FAILED;
+      }
+      else
+      {
+        Serial.println("Lectura descartada por ocupación persistente del canal");
+      }
+
+      return;
+    }
+
+    // ---------------------------------------------------
+    // Posponer acceso al canal.
+    // NO incrementamos txAttempt porque no hubo TX.
+    // ---------------------------------------------------
+    retryDelay = RETRY_BACKOFF_MIN + (esp_random() % (RETRY_BACKOFF_MAX - RETRY_BACKOFF_MIN + 1));
+    retryStartedAt = millis();
+    retryPending = true;
+    waitingAck = false;
+
+    Serial.printf("CSMA/CA: nuevo acceso en %lu ms\n", retryDelay);
+    return;
+  }
+
+  // Canal conseguido
+  channelDeferrals = 0;
+
+  // =====================================================
+  // A partir de aquí empieza realmente la transmisión
+  // =====================================================
   uint8_t packet[LORA_MAX_PACKET_SIZE];
   size_t packetLen = 0;
 
-  // Construir DATA binario
   bool ok = LoRaProtocol::createDataMessageBinary(currentSeq, DEVICE_ID, payload, packet, sizeof(packet), packetLen);
 
   if (!ok)
@@ -174,7 +257,6 @@ void sendMessage(const String &payload)
     return;
   }
 
-  // Enviar bytes binarios por LoRa
   LoRa.beginPacket();
   LoRa.write(packet, packetLen);
 
@@ -188,7 +270,6 @@ void sendMessage(const String &payload)
 
   Serial.printf("TX BIN [%lu] intento=%lu/%u (%u bytes): %s\n", (unsigned long)currentSeq, (unsigned long)(txAttempt + 1), MAX_TX_ATTEMPTS, (unsigned int)packetLen, payload.c_str());
 
-  // Empezar espera de ACK
   waitingAck = true;
   ackStartedAt = millis();
 }
@@ -292,7 +373,8 @@ void setup()
   Serial.println("HELTEC TX ROBUST MODE (BINARY V1)");
 
   // Forzar una primera lectura inmediata cuando el nodo esté listo
-  lastMeasurementAt = millis() - TX_INTERVAL;
+  lastMeasurementAt = millis();
+  nextMeasurementDelay = 0;
 }
 
 // =========================================================
@@ -345,11 +427,14 @@ void loop()
   // -----------------------------------------------------
   // Envío periódico si no estamos esperando ACK
   // -----------------------------------------------------
-  if (!waitingAck && !retryPending && millis() - lastMeasurementAt >= TX_INTERVAL)
+  if (!waitingAck && !retryPending && millis() - lastMeasurementAt >= nextMeasurementDelay)
   {
 
     // Registrar el comienzo de un nuevo ciclo de medida
     lastMeasurementAt = millis();
+    nextMeasurementDelay = getNextMeasurementDelay();
+    Serial.printf("Próximo envío en %.2f s\n", nextMeasurementDelay / 1000.0);
+    
     currentSeq = seq;
     txAttempt = 0;
 
@@ -401,7 +486,14 @@ void loop()
   {
     retryPending = false;
 
-    Serial.printf("RETRY [%lu] intento=%lu\n", (unsigned long)currentSeq, (unsigned long)(txAttempt + 1));
+    if (txAttempt == 0)
+    {
+      Serial.printf("CSMA/CA: reintentando acceso para DATA [%lu]\n", (unsigned long)currentSeq);
+    }
+    else
+    {
+      Serial.printf("RETRY [%lu] intento=%lu\n", (unsigned long)currentSeq, (unsigned long)(txAttempt + 1));
+    }
 
     sendMessage(currentPayload);
   }
