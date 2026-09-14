@@ -92,8 +92,17 @@ bool parseDataMessageBinary(const uint8_t *packet, size_t packetLen, LoRaMessage
   msg.payload = String(reinterpret_cast<char *>(plaintext));
 
   free(plaintext);
-
   Serial.printf("DATA BINARIO OK: seq=%lu deviceId=%s payload=%u bytes\n", (unsigned long)msg.seq, msg.deviceId.c_str(), (unsigned int)ciphertextLen);
+
+  msg.ivEpoch = readUint64BE(iv);
+  msg.ivCounter = readUint32BE(iv + 8);
+
+  Serial.printf(
+    "DATA IV: seq=%lu epoch=%016llX counter=%lu\n",
+    (unsigned long)msg.seq,
+    (unsigned long long)msg.ivEpoch,
+    (unsigned long)msg.ivCounter);
+
   return true;
 }
 
@@ -166,5 +175,15 @@ bool parseAckMessageBinary(const uint8_t *packet, size_t packetLen, LoRaAck &ack
   ack.deviceId = header.deviceId;
 
   Serial.printf("ACK BINARIO OK: seq=%lu deviceId=%s\n", (unsigned long)ack.seq, ack.deviceId.c_str());
+
+  ack.ivEpoch = readUint64BE(iv);
+  ack.ivCounter = readUint32BE(iv + 8);
+
+  Serial.printf(
+    "ACK IV: seq=%lu epoch=%016llX counter=%lu\n",
+    (unsigned long)ack.seq,
+    (unsigned long long)ack.ivEpoch,
+    (unsigned long)ack.ivCounter);
+
   return true;
 }

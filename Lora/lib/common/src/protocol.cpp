@@ -20,6 +20,18 @@ uint32_t readUint32BE(const uint8_t *buffer)
          ((uint32_t)buffer[3]);
 }
 
+uint64_t readUint64BE(const uint8_t *buffer)
+{
+  return ((uint64_t)buffer[0] << 56) |
+         ((uint64_t)buffer[1] << 48) |
+         ((uint64_t)buffer[2] << 40) |
+         ((uint64_t)buffer[3] << 32) |
+         ((uint64_t)buffer[4] << 24) |
+         ((uint64_t)buffer[5] << 16) |
+         ((uint64_t)buffer[6] << 8) |
+         ((uint64_t)buffer[7]);
+}
+
 bool writeDeviceIdBytes(const String &deviceIdHex, uint8_t *outBytes)
 {
   // El deviceId debe contener exactamente 6 bytes:

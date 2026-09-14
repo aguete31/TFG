@@ -5,6 +5,7 @@
 #include <protocol.h>
 #include "telemetry_buffer.h"
 #include "gateway_time.h"
+#include "anti_replay.h"
 
 // ==================== Gestión de duplicados LoRa ====================
 
@@ -86,6 +87,14 @@ void lora_handle_binary_packet(const uint8_t *packet, size_t packetLen, int rssi
     return;
   }
 
+  AntiReplayResult replayResult = antiReplayCheck(msg.ivEpoch, msg.ivCounter);
+
+  if (replayResult != AntiReplayResult::ACCEPTED)
+  {
+    Serial.printf("DATA rechazado por anti-replay: seq=%lu\n", (unsigned long)msg.seq);
+    return;
+  }
+
   Serial.printf("Message BIN from deviceId: %s\n", msg.deviceId.c_str());
 
   if (isDuplicate(msg.deviceId, msg.seq))
@@ -116,11 +125,5 @@ void lora_handle_binary_packet(const uint8_t *packet, size_t packetLen, int rssi
 
   // En el protocolo binario ya no existe retry.
   // Usamos 0 mientras esta API antigua siga esperando ese campo.
-  http_set_last_telemetry(
-      data.timestamp,
-      0,
-      msg.deviceId,
-      msg.payload,
-      rssi,
-      snr);
+  http_set_last_telemetry(data.timestamp, 0, msg.deviceId, msg.payload, rssi, snr);
 }

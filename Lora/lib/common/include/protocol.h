@@ -36,6 +36,9 @@ struct LoRaMessage {
   uint32_t seq;
   String deviceId;
   String payload;
+
+  uint64_t ivEpoch;
+  uint32_t ivCounter;
 };
 
 /**
@@ -44,6 +47,9 @@ struct LoRaMessage {
 struct LoRaAck {
   uint32_t seq;
   String deviceId;
+
+  uint64_t ivEpoch;
+  uint32_t ivCounter;
 };
 
 struct LoRaBinaryHeader
@@ -64,6 +70,8 @@ void writeUint32BE(uint8_t *buffer, uint32_t value);
 * @brief Lee un uint32_t almacenado en formato big-endian.
 */
 uint32_t readUint32BE(const uint8_t *buffer);
+
+uint64_t readUint64BE(const uint8_t *buffer);
 
 /**
 * @brief Convierte un deviceId hexadecimal de 12 caracteres
