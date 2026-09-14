@@ -269,10 +269,18 @@ bool store_device_key_in_nvs(const uint8_t *key, size_t key_len)
 bool load_device_key_from_nvs()
 {
   Preferences prefs;
-  prefs.begin(NVS_CRYPTO_NAMESPACE, true); // solo lectura
+  prefs.begin(NVS_CRYPTO_NAMESPACE, true);
+
+  if (!prefs.isKey(NVS_KEY_DEVKEY))
+  {
+    prefs.end();
+    clear_aes_key();
+    return false;
+  }
 
   uint8_t tmp[AES_KEY_SIZE];
   size_t r = prefs.getBytes(NVS_KEY_DEVKEY, tmp, AES_KEY_SIZE);
+
   prefs.end();
 
   if (r != AES_KEY_SIZE)
@@ -281,9 +289,9 @@ bool load_device_key_from_nvs()
     return false;
   }
 
-  // Copiar a AES_KEY y limpiar temporal
   memcpy(AES_KEY, tmp, AES_KEY_SIZE);
   secure_zero(tmp, AES_KEY_SIZE);
   set_key_ready(true);
+
   return true;
 }

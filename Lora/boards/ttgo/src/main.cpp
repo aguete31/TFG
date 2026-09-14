@@ -150,8 +150,17 @@ void setup()
   String storedPass;
 
   prefs.begin("wifi_cfg", true);
-  storedSsid = prefs.getString("ssid", "");
-  storedPass = prefs.getString("pass", "");
+
+  if (prefs.isKey("ssid"))
+  {
+    storedSsid = prefs.getString("ssid", "");
+  }
+
+  if (prefs.isKey("pass"))
+  {
+    storedPass = prefs.getString("pass", "");
+  }
+  
   prefs.end();
 
   bool wifiConnected = false;

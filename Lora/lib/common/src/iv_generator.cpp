@@ -1,95 +1,182 @@
 #include "iv_generator.h"
+
 #include <Preferences.h>
 #include <esp_system.h>
-#include "crypto.h"
+#include <string.h>
 
-// Namespace y clave para almacenamiento persistente del contador
+// Namespace NVS del estado del protocolo
 static const char *NVS_NAMESPACE = "lora_proto";
-static const char *NVS_KEY_COUNTER = "iv_cnt";
 
-// Número de IV que se reservan con cada escritura en NVS
-static constexpr uint64_t IV_COUNTER_BLOCK_SIZE = 1024;
+// Estado persistente del nuevo esquema IV
+static const char *NVS_KEY_EPOCH = "iv_epoch";
+static const char *NVS_KEY_COUNTER = "iv_cnt32";
 
-// Estado del bloque actualmente reservado en RAM
-static uint64_t next_iv_counter = 0;
-static uint64_t iv_counter_end = 0;
+// Reservamos contadores por bloques para reducir escrituras en flash
+static constexpr uint32_t IV_COUNTER_BLOCK_SIZE = 1024;
+
+// Epoch activo en RAM
+static uint8_t iv_epoch[8] = {0};
+static bool iv_epoch_ready = false;
+
+// Estado del bloque de contadores reservado en RAM
+static uint32_t next_iv_counter = 0;
+static uint32_t iv_counter_end = 0;
 static bool iv_block_ready = false;
 
+
 /**
- * @brief Lee el contador persistente desde NVS.
- *
- * Si no existe, devuelve 0.
+ * @brief Carga el epoch IV persistente desde NVS.
  */
-static uint64_t read_iv_counter()
+static bool load_iv_epoch()
 {
   Preferences prefs;
-  prefs.begin(NVS_NAMESPACE, true); // modo solo lectura
-  uint64_t counter = prefs.getULong64(NVS_KEY_COUNTER, 0);
-  prefs.end();
-  return counter;
-}
+  prefs.begin(NVS_NAMESPACE, true);
 
-/**
- * @brief Guarda el contador persistente en NVS.
- *
- * @param counter Nuevo valor del contador
- * @return true si se guardó correctamente, false en caso contrario
- */
-static bool write_iv_counter(uint64_t counter)
-{
-  Preferences prefs;
-  prefs.begin(NVS_NAMESPACE, false);                     // modo escritura
-  size_t w = prefs.putULong64(NVS_KEY_COUNTER, counter); // guarda bytes
-  prefs.end();
-  return (w == sizeof(counter)); // verifica que se haya escrito todo
-}
-
-
-
-/**
- * @brief Reserva un nuevo bloque de contadores IV.
- *
- * NVS almacena el límite superior ya reservado.
- * El nuevo bloque se persiste ANTES de utilizar ninguno
- * de sus contadores.
- */
-static bool reserve_iv_counter_block()
-{
-  uint64_t previous_end = read_iv_counter();
-
-  // Comprobar overflow antes de sumar
-  if (previous_end > UINT64_MAX - IV_COUNTER_BLOCK_SIZE)
+  if (!prefs.isKey(NVS_KEY_EPOCH))
   {
-    Serial.println("IV counter exhausted");
+    prefs.end();
     return false;
   }
 
-  uint64_t new_end = previous_end + IV_COUNTER_BLOCK_SIZE;
+  uint8_t tmp[sizeof(iv_epoch)];
 
-  // Primero persistimos la reserva completa.
-  // Si el dispositivo se apaga después de este punto,
-  // al reiniciar saltará al siguiente bloque.
-  if (!write_iv_counter(new_end))
+  size_t r = prefs.getBytes(NVS_KEY_EPOCH, tmp, sizeof(tmp));
+  prefs.end();
+
+  if (r != sizeof(tmp))
   {
-    Serial.println("Failed to reserve IV counter block");
     return false;
   }
 
-  next_iv_counter = previous_end + 1;
-  iv_counter_end = new_end;
-  iv_block_ready = true;
-
-  Serial.printf("IV block reserved: %llu - %llu\n", (unsigned long long)next_iv_counter, (unsigned long long)iv_counter_end);
+  memcpy(iv_epoch, tmp, sizeof(iv_epoch));
+  iv_epoch_ready = true;
 
   return true;
 }
 
 
+/**
+ * @brief Lee el límite superior de contador reservado.
+ */
+static uint32_t read_iv_counter()
+{
+  Preferences prefs;
+  prefs.begin(NVS_NAMESPACE, true);
 
+  uint32_t counter = prefs.getUInt(NVS_KEY_COUNTER, 0);
+
+  prefs.end();
+  return counter;
+}
 
 
 /**
- * @brief Genera un IV único combinando ID de dispositivo y contador persistente.
+ * @brief Guarda el límite superior reservado del contador.
+ */
+static bool write_iv_counter(uint32_t counter)
+{
+  Preferences prefs;
+  prefs.begin(NVS_NAMESPACE, false);
+
+  size_t written = prefs.putUInt(NVS_KEY_COUNTER, counter);
+  prefs.end();
+
+  return written == sizeof(counter);
+}
+
+
+/**
+ * @brief Inicializa un nuevo espacio de IV para una nueva clave.
+ */
+bool initializeIvForNewKey()
+{
+  uint8_t newEpoch[sizeof(iv_epoch)];
+
+  // 64 bits aleatorios
+  esp_fill_random(newEpoch, sizeof(newEpoch));
+
+  Preferences prefs;
+  prefs.begin(NVS_NAMESPACE, false);
+
+  /*
+   * IMPORTANTE:
+   * Primero escribimos el nuevo epoch y DESPUÉS
+   * reiniciamos el contador.
+   *
+   * Si se corta la alimentación entre ambas escrituras,
+   * tendremos epoch nuevo + contador antiguo, que sigue
+   * siendo seguro.
+   *
+   * Nunca queremos contador reiniciado + epoch antiguo.
+   */
+  size_t epochWritten = prefs.putBytes(NVS_KEY_EPOCH, newEpoch, sizeof(newEpoch));
+
+  if (epochWritten != sizeof(newEpoch))
+  {
+    prefs.end();
+    Serial.println("IV: failed to store new epoch");
+    return false;
+  }
+
+  size_t counterWritten = prefs.putUInt(NVS_KEY_COUNTER, 0);
+  prefs.end();
+
+  if (counterWritten != sizeof(uint32_t))
+  {
+    Serial.println("IV: failed to reset counter");
+    return false;
+  }
+
+  // Activar nuevo estado en RAM
+  memcpy(iv_epoch, newEpoch, sizeof(iv_epoch));
+
+  iv_epoch_ready = true;
+
+  next_iv_counter = 0;
+  iv_counter_end = 0;
+  iv_block_ready = false;
+
+  Serial.println("IV: new epoch initialized");
+  return true;
+}
+
+
+/**
+ * @brief Reserva un nuevo bloque de contadores.
+ *
+ * El límite superior se persiste ANTES de utilizar
+ * cualquiera de los contadores del bloque.
+ */
+static bool reserve_iv_counter_block()
+{
+  uint32_t previousEnd = read_iv_counter();
+
+  if (previousEnd > UINT32_MAX - IV_COUNTER_BLOCK_SIZE)
+  {
+    Serial.println("IV counter exhausted");
+    return false;
+  }
+
+  uint32_t newEnd = previousEnd + IV_COUNTER_BLOCK_SIZE;
+
+  // Persistir primero todo el bloque reservado
+  if (!write_iv_counter(newEnd))
+  {
+    Serial.println("Failed to reserve IV counter block");
+    return false;
+  }
+
+  next_iv_counter = previousEnd + 1;
+  iv_counter_end = newEnd;
+  iv_block_ready = true;
+
+  Serial.printf("IV block reserved: %lu - %lu\n", (unsigned long)next_iv_counter, (unsigned long)iv_counter_end);
+  return true;
+}
+
+
+/**
+ * @brief Genera un IV único de 96 bits para AES-GCM.
  */
 bool generateSecureIV(uint8_t *iv_out)
 {
@@ -98,10 +185,26 @@ bool generateSecureIV(uint8_t *iv_out)
     return false;
   }
 
-  // Si todavía no tenemos bloque o se ha agotado,
-  // reservar uno nuevo.
-  if (!iv_block_ready ||
-      next_iv_counter > iv_counter_end)
+  // Cargar el epoch persistente si todavía no está en RAM
+  if (!iv_epoch_ready)
+  {
+    if (!load_iv_epoch())
+    {
+      /*
+       * Compatibilidad/migración:
+       * si todavía no existe epoch, crear uno nuevo.
+       */
+      Serial.println("IV: no epoch found, creating one");
+
+      if (!initializeIvForNewKey())
+      {
+        return false;
+      }
+    }
+  }
+
+  // Reservar bloque si hace falta
+  if (!iv_block_ready || next_iv_counter > iv_counter_end)
   {
     if (!reserve_iv_counter_block())
     {
@@ -109,30 +212,12 @@ bool generateSecureIV(uint8_t *iv_out)
     }
   }
 
-  // Consumir el siguiente contador del bloque
-  uint64_t counter = next_iv_counter++;
+  uint32_t counter = next_iv_counter++;
 
-  // Identificador estable del ESP32
-  uint64_t chipId = ESP.getEfuseMac();
-  uint32_t device_id = (uint32_t)(chipId & 0xFFFFFFFFULL);
+  // Bytes 0-7: epoch aleatorio
+  memcpy(&iv_out[0], iv_epoch, sizeof(iv_epoch));
 
-  // -----------------------------------------------------
-  // Bytes 0-3: identificador del dispositivo
-  // -----------------------------------------------------
-
-  iv_out[0] = (uint8_t)((device_id >> 24) & 0xFF);
-  iv_out[1] = (uint8_t)((device_id >> 16) & 0xFF);
-  iv_out[2] = (uint8_t)((device_id >> 8) & 0xFF);
-  iv_out[3] = (uint8_t)(device_id & 0xFF);
-
-  // -----------------------------------------------------
-  // Bytes 4-11: contador monotónico
-  // -----------------------------------------------------
-
-  iv_out[4] = (uint8_t)((counter >> 56) & 0xFF);
-  iv_out[5] = (uint8_t)((counter >> 48) & 0xFF);
-  iv_out[6] = (uint8_t)((counter >> 40) & 0xFF);
-  iv_out[7] = (uint8_t)((counter >> 32) & 0xFF);
+  // Bytes 8-11: contador big-endian
   iv_out[8] = (uint8_t)((counter >> 24) & 0xFF);
   iv_out[9] = (uint8_t)((counter >> 16) & 0xFF);
   iv_out[10] = (uint8_t)((counter >> 8) & 0xFF);

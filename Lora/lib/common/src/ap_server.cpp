@@ -8,6 +8,7 @@
 
 #include "pair_status.h"
 #include "crypto.h"
+#include "iv_generator.h"
 
 // ==================== Estado global interno ====================
 
@@ -498,6 +499,17 @@ static void pairTask(void *param)
 
   // Derivar clave desde la contraseña -> AES_KEY
   ok = derive_key_from_password(pwStr, AES_KEY, AES_KEY_SIZE);
+
+  // Crear un nuevo espacio de IV para esta clave
+  if (ok)
+  {
+    if (!initializeIvForNewKey())
+    {
+      Serial.println("pairTask: failed to initialize IV epoch");
+      clear_aes_key();
+      ok = false;
+    }
+  }
 
   // Borrar la contraseña de memoria
   if (pw)

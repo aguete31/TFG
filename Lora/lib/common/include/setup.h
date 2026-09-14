@@ -79,6 +79,7 @@ inline void lora_begin_basic() {
     LoRa.setSignalBandwidth(LORA_BW);
     LoRa.setCodingRate4(LORA_CR);
     LoRa.setTxPower(LORA_TXPWR);
+    LoRa.setSyncWord(LORA_SYNC_WORD);
     LoRa.enableCrc();
     
     Serial.printf("LoRa OK (SF=%d BW=%.0f CR=4/%d TX=%d dBm)\n", LORA_SF, (double)LORA_BW, LORA_CR, LORA_TXPWR);
