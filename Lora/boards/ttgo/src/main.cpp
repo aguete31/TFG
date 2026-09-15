@@ -2,7 +2,6 @@
 #include <LoRa.h>
 #include <WiFi.h>
 #include <esp_system.h>
-#include <Preferences.h>
 
 #include <setup.h>
 #include <protocol.h>
@@ -10,13 +9,11 @@
 #include "ap_server.h"
 #include "pair_status.h"
 #include "factory_reset.h"
-#include "http_server.h"
 #include "gateway_time.h"
 
-#include <ESPmDNS.h>
 #include "device_id.h"
 #include "lora_handler.h"
-#include "telemetry_buffer.h"
+#include "wifi_config.h"
 
 // ==================== Configuración de hardware ====================
 
@@ -31,41 +28,9 @@ static bool ap_off_scheduled = false;
 
 // Estado de lógica de red / integración
 static bool g_is_paired = false;    // Estado de emparejamiento (clave AES en NVS)
-static bool g_http_started = false; // Para arrancar http_server una sola vez
 
-// Estado mDNS
-static bool g_mdns_started = false;
+static bool g_time_started = false;
 
-// ==================== Identidad del dispositivo ====================
-
-/**
- * @brief Creación de mDNS para establecer comunicación con HA.
- */
-void start_mdns()
-{
-  if (g_mdns_started)
-  {
-    return;
-  }
-
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.println("mDNS: WiFi no conectada, no se inicia mDNS");
-    return;
-  }
-
-  if (!MDNS.begin("lora-gateway"))
-  { // nombre: lora-gateway.local
-    Serial.println("Error iniciando mDNS");
-    return;
-  }
-
-  // Anunciar el servicio HTTP que se expone para HA
-  MDNS.addService("lora-gw", "tcp", 8000); // _lora-gw._tcp.local:8000
-  g_mdns_started = true;
-
-  Serial.println("mDNS iniciado: http://lora-gateway.local:8000");
-}
 
 // ==================== Callback de emparejamiento ====================
 
@@ -83,9 +48,6 @@ static void on_paired(bool ok)
   if (ok)
   {
     Serial.println("Pair callback: derivación OK");
-
-    // Marcar como emparejado para el endpoint HTTP /status (Home Assistant)
-    http_set_paired(true);
     g_is_paired = true;
   }
   else
@@ -121,7 +83,6 @@ void setup()
   Serial.print("Gateway Device ID: ");
   Serial.println(DEVICE_ID);
 
-  Preferences prefs;
   bool isPaired = false;
 
   // ---------------------------------------------------------------------------
@@ -131,9 +92,6 @@ void setup()
   {
     Serial.println("Device key loaded from NVS -> PAIRED, AES_KEY listo");
     isPaired = true;
-
-    // Marcar también para /status del http_server
-    http_set_paired(true);
   }
   else
   {
@@ -143,57 +101,11 @@ void setup()
 
   g_is_paired = isPaired;
 
+
   // ---------------------------------------------------------------------------
-  // ¿Hay WiFi guardada en NVS? (wifi_cfg: ssid + pass)
+  // Intentar conectar a la WiFi guardada
   // ---------------------------------------------------------------------------
-  String storedSsid;
-  String storedPass;
-
-  prefs.begin("wifi_cfg", true);
-
-  if (prefs.isKey("ssid"))
-  {
-    storedSsid = prefs.getString("ssid", "");
-  }
-
-  if (prefs.isKey("pass"))
-  {
-    storedPass = prefs.getString("pass", "");
-  }
-  
-  prefs.end();
-
-  bool wifiConnected = false;
-
-  if (storedSsid.length() > 0)
-  {
-    Serial.printf("WiFi guardada en NVS: SSID='%s' -> intentando conectar...\n", storedSsid.c_str());
-
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(storedSsid.c_str(), storedPass.c_str());
-
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000)
-    {
-      delay(500);
-      Serial.print(".");
-    }
-    Serial.println();
-
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      wifiConnected = true;
-      Serial.print("WiFi conectada al arrancar.");
-    }
-    else
-    {
-      Serial.println("No se pudo conectar a la WiFi guardada (timeout)");
-    }
-  }
-  else
-  {
-    Serial.println("No hay WiFi configurada en NVS");
-  }
+  bool wifiConnected = wifiConfigConnectStored();
 
   // ---------------------------------------------------------------------------
   // Si NO estoy emparejado o NO tengo WiFi conectada -> encender AP
@@ -215,9 +127,6 @@ void setup()
   lora_begin_basic();
   Serial.println("TTGO GATEWAY ROBUST MODE (BINARY V1)");
 
-  // Inicio del buffer para almacenar datos no enviados
-  initTelemetryBuffer();
-
   // Inicializar handler de LoRa (buffer duplicados, etc.)
   lora_handler_init(DEVICE_ID);
 
@@ -227,13 +136,7 @@ void setup()
   if (wifiConnected)
   {
     gateway_time_init();
-    start_mdns();
-    http_init(DEVICE_ID, isPaired);
-    g_http_started = true;
-  }
-  else
-  {
-    g_http_started = false;
+    g_time_started = true;
   }
 }
 
@@ -299,8 +202,7 @@ void loop()
     // -----------------------------------------------------
     // PROTOCOLO BINARIO V1
     // -----------------------------------------------------
-
-    if (packet[OFFSET_VERSION] == LORA_PROTOCOL_VERSION)
+    else if (packet[OFFSET_VERSION] == LORA_PROTOCOL_VERSION)
     {
       lora_handle_binary_packet(packet, packetLen, rssi, snr);
     }
@@ -308,7 +210,6 @@ void loop()
     // -----------------------------------------------------
     // FORMATO DESCONOCIDO
     // -----------------------------------------------------
-
     else
     {
       Serial.printf("LoRa: formato desconocido, primer byte=0x%02X, longitud=%u\n", packet[0], (unsigned int)packetLen);
@@ -322,13 +223,12 @@ void loop()
   // Detectar si la STA está conectada en este ciclo
   bool wifi_now_connected = (WiFi.status() == WL_CONNECTED);
 
-  // Arrancar servidor HTTP para Home Assistant en la red de casa
-  if (!g_http_started && wifi_now_connected)
+  if (wifi_now_connected && !g_time_started)
   {
-    Serial.println("WiFi STA conectada -> iniciando http_server (HA)");
-    start_mdns();
-    http_init(DEVICE_ID, g_is_paired);
-    g_http_started = true;
+    Serial.println("WiFi STA conectada -> inicializando hora del gateway");
+
+    gateway_time_init();
+    g_time_started = true;
   }
 
   // Programar apagado del AP cuando la WiFi se conecta por primera vez
@@ -347,9 +247,6 @@ void loop()
     ap_should_stop = false;
     ap_off_scheduled = true;
   }
-
-  // Atender peticiones HTTP (Home Assistant)
-  http_loop();
 
   // Pequeña espera para no saturar la CPU
   delay(10);

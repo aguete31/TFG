@@ -2,52 +2,21 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
-#include <Preferences.h>
 #include <SPIFFS.h>
-#include <cstring>
 
-#include "pair_status.h"
-#include "crypto.h"
-#include "iv_generator.h"
+#include "pairing_service.h"
+#include "wifi_config.h"
 
 // ==================== Estado global interno ====================
 
 // Servidor HTTP del modo AP (puerto 80)
 static WebServer server(80);
 
-// Callback de usuario para notificar resultado de emparejamiento
-static pair_callback_t user_cb = nullptr;
-
-#ifdef DEVICE_GATEWAY
-// Estado del emparejamiento (gateway)
-static volatile PairState g_state = PAIR_IDLE;
-#endif
-
-#ifdef DEVICE_HELTEC
-volatile PairStatus pairStatus = IDLE;
-#endif
-
 // Tarea del servidor HTTP (AP)
 static TaskHandle_t webServerTaskHandle = nullptr;
 
-// Manejador de almacenamiento NVS (usado para clave y WiFi)
-static Preferences prefs;
-
 // Flag para saber si el AP está activo
 static bool ap_running = false;
-
-// ===== Estado de configuración WiFi mientras el AP está encendido =====
-enum WifiCfgState
-{
-  WIFI_CFG_IDLE,
-  WIFI_CFG_CONNECTING,
-  WIFI_CFG_CONNECTED,
-  WIFI_CFG_FAILED
-};
-
-static WifiCfgState g_wifi_state = WIFI_CFG_IDLE;
-static String g_wifi_ssid;
-static unsigned long g_wifi_connect_start = 0;
 
 // ==================== Prototipos internos ====================
 
@@ -55,16 +24,6 @@ static unsigned long g_wifi_connect_start = 0;
  * @brief Tarea RTOS que atiende las peticiones HTTP del servidor en modo AP.
  */
 static void webServerTask(void *param);
-
-/**
- * @brief Tarea RTOS que realiza la derivación de clave a partir de la contraseña.
- */
-static void pairTask(void *param);
-
-/**
- * @brief Convierte el estado de emparejamiento del gateway a cadena.
- */
-static const char *stateToStr(PairState s);
 
 /**
  * @brief Manejador HTTP: página inicial de emparejamiento (GET /).
@@ -101,34 +60,7 @@ static void handleNotFound();
  */
 static void handlePair();
 
-// ==================== Funciones auxiliares ====================
-
-/**
- * @brief Convierte el estado de emparejamiento del gateway a cadena legible.
- *
- * @param s Estado interno de emparejamiento.
- * @return Cadena constante con el nombre del estado.
- */
-static const char *stateToStr(PairState s)
-{
-  switch (s)
-  {
-  case PAIR_IDLE:
-    return "idle";
-  case PAIR_PENDING:
-    return "pending";
-  case PAIR_BUSY:
-    return "busy";
-  case PAIR_SUCCESS:
-    return "success";
-  case PAIR_FAILED:
-    return "failed";
-  }
-  return "unknown";
-}
-
 // ==================== Manejadores HTTP (HTML / JSON) ====================
-
 /**
  * @brief Manejador para la ruta raíz "/" que sirve la página de emparejamiento.
  *
@@ -200,36 +132,18 @@ static void handleWifiConfig()
   {
     server.send(400, "text/plain", "Missing ssid or password");
     Serial.println("HTTP POST /wifi_config missing arg");
+
     return;
   }
 
-  g_wifi_ssid = server.arg("ssid");
-  String wifi_pass = server.arg("password");
+  String ssid = server.arg("ssid");
+  String password = server.arg("password");
 
-  g_wifi_ssid.trim();
-  wifi_pass.trim();
-
-  if (g_wifi_ssid.length() == 0)
+  if (!wifiConfigSaveAndConnect(ssid, password))
   {
-    server.send(400, "text/plain", "SSID vacío");
-    Serial.println("HTTP POST /wifi_config with empty SSID");
+    server.send(400, "text/plain", "Invalid WiFi configuration");
     return;
   }
-
-  // Guardar configuración WiFi en NVS para futuros arranques
-  prefs.begin("wifi_cfg", false);
-  prefs.putString("ssid", g_wifi_ssid);
-  prefs.putString("pass", wifi_pass);
-  prefs.end();
-
-  // Arrancar STA sin apagar el AP (modo AP+STA)
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.begin(g_wifi_ssid.c_str(), wifi_pass.c_str());
-
-  g_wifi_state = WIFI_CFG_CONNECTING;
-  g_wifi_connect_start = millis();
-
-  Serial.printf("WiFi config recibida. SSID='%s' -> conectando...\n", g_wifi_ssid.c_str());
 
   server.send(200, "text/plain", "OK");
 }
@@ -250,48 +164,27 @@ static void handleWifiConfig()
  */
 static void handleWifiStatus()
 {
-  // Actualizar estado según WiFi.status() si estamos en fase de conexión
-  if (g_wifi_state == WIFI_CFG_CONNECTING)
-  {
-    wl_status_t st = WiFi.status();
-    if (st == WL_CONNECTED)
-    {
-      g_wifi_state = WIFI_CFG_CONNECTED;
-      Serial.println("WiFi STA conectada correctamente");
-    }
-    else
-    {
-      // Timeout de 15 segundos
-      if (millis() - g_wifi_connect_start > 15000)
-      {
-        g_wifi_state = WIFI_CFG_FAILED;
-        Serial.println("WiFi STA fallo de conexión (timeout)");
-      }
-    }
-  }
+  wifiConfigUpdate();
 
-  String stateStr;
-  switch (g_wifi_state)
-  {
-  case WIFI_CFG_IDLE:
-    stateStr = "idle";
-    break;
-  case WIFI_CFG_CONNECTING:
-    stateStr = "connecting";
-    break;
-  case WIFI_CFG_CONNECTED:
-    stateStr = "connected";
-    break;
-  case WIFI_CFG_FAILED:
-    stateStr = "failed";
-    break;
-  }
-
+  WifiConfigState state = wifiConfigGetState();
   String json = "{";
-  json += "\"state\":\"" + stateStr + "\",";
-  json += "\"ssid\":\"" + g_wifi_ssid + "\"";
-  json += "}";
 
+  json += "\"state\":\"";
+  json += wifiConfigStateToString(state);
+  json += "\",";
+
+  json += "\"ssid\":\"";
+  json += wifiConfigGetSsid();
+  json += "\"";
+
+  if (state == WIFI_CFG_CONNECTED)
+  {
+    json += ",\"ip\":\"";
+    json += WiFi.localIP().toString();
+    json += "\"";
+  }
+
+  json += "}";
   server.send(200, "application/json", json);
 }
 
@@ -313,44 +206,46 @@ static void handleWifiStatus()
  */
 static void handleStatus()
 {
-#ifdef DEVICE_GATEWAY
-  bool paired = false;
-  prefs.begin("lora_proto", true);
-  paired = prefs.getBool("paired", false);
-  prefs.end();
+  #ifdef DEVICE_GATEWAY
 
-  String json = String("{\"state\":\"") + stateToStr(g_state) +
-                String("\",\"paired\":") + (paired ? "true" : "false") + String("}");
+  PairState state = pairingServiceGetState();
+  bool paired = pairingServiceIsPaired();
+
+  String json = String("{\"state\":\"") + pairingServiceStateToString(state) + String("\",\"paired\":") + (paired ? "true" : "false") + String("}");
 
   server.send(200, "application/json", json);
   Serial.printf("HTTP GET /status -> %s\n", json.c_str());
-#endif
 
-#ifdef DEVICE_HELTEC
+  #endif
+
+  #ifdef DEVICE_HELTEC
+
   String json = "{\"state\":\"";
+
   switch (pairStatus)
   {
-  case IDLE:
-    json += "idle";
-    break;
-  case PAIRING:
-    json += "pairing";
-    break;
-  case WAITING:
-    json += "waiting";
-    break;
-  case PAIRED:
-    json += "paired";
-    break;
-  case FAILED:
-    json += "failed";
-    break;
+    case IDLE:
+      json += "idle";
+      break;
+    case PAIRING:
+      json += "pairing";
+      break;
+    case WAITING:
+      json += "waiting";
+      break;
+    case PAIRED:
+      json += "paired";
+      break;
+    case FAILED:
+      json += "failed";
+      break;
   }
-  json += "\"}";
 
+  json += "\"}";
   server.send(200, "application/json", json);
   Serial.printf("HTTP GET /status -> %s\n", json.c_str());
-#endif
+  
+  #endif
 }
 
 /**
@@ -380,78 +275,44 @@ static void handlePair()
   {
     server.send(400, "text/plain", "Missing password");
     Serial.println("HTTP POST /pair missing password");
-    return;
-  }
 
-#if defined(DEVICE_GATEWAY)
-  if (g_state == PAIR_BUSY || g_state == PAIR_PENDING)
-  {
-    server.send(409, "text/plain", "Pairing already in progress");
-    Serial.println("HTTP POST /pair rejected: already in progress");
     return;
   }
-#elif defined(DEVICE_HELTEC)
-  if (pairStatus == PAIRING)
-  {
-    server.send(409, "text/plain", "Pairing already in progress");
-    Serial.println("HTTP POST /pair rejected: already in progress");
-    return;
-  }
-#endif
 
   String password = server.arg("password");
-  password.trim();
+  PairingStartResult result = pairingServiceStart(password);
 
-  if (password.length() < 8)
+  switch (result)
   {
+  case PairingStartResult::STARTED:
+
+    server.send(200, "text/plain", "OK");
+    Serial.println("HTTP POST /pair accepted");
+    break;
+
+  case PairingStartResult::INVALID_PASSWORD:
+
     server.send(400, "text/plain", "Password too short (min 8)");
     Serial.println("HTTP POST /pair password too short");
-    return;
-  }
+    break;
 
-  // Respuesta inmediata al cliente HTTP
-  server.send(200, "text/plain", "OK");
-  Serial.println("HTTP POST /pair accepted: spawning pair task");
+  case PairingStartResult::BUSY:
 
-  // Copiar la contraseña a un buffer dinámico para pasarla a la tarea
-  char *pass_c = static_cast<char *>(malloc(password.length() + 1));
-  if (!pass_c)
-  {
-    Serial.println("malloc failed for pass_c");
-#if defined(DEVICE_GATEWAY)
-    g_state = PAIR_FAILED;
-#elif defined(DEVICE_HELTEC)
-    pairStatus = FAILED;
-#endif
-    return;
-  }
-  strcpy(pass_c, password.c_str());
+    server.send(409, "text/plain", "Pairing already in progress");
+    Serial.println("HTTP POST /pair rejected: busy");
+    break;
 
-#if defined(DEVICE_GATEWAY)
-  g_state = PAIR_PENDING;
-#elif defined(DEVICE_HELTEC)
-  pairStatus = PAIRING;
-#endif
+  case PairingStartResult::ALLOC_ERROR:
 
-  // Crear la tarea que hará la derivación de clave
-  BaseType_t res = xTaskCreatePinnedToCore(
-      pairTask,
-      "pairTask",
-      8192,
-      pass_c,
-      1,
-      nullptr,
-      1);
+    server.send(500, "text/plain", "Memory allocation failed");
+    Serial.println("HTTP POST /pair allocation error");
+    break;
 
-  if (res != pdPASS)
-  {
-    Serial.println("Failed to create pairTask");
-    free(pass_c);
-#if defined(DEVICE_GATEWAY)
-    g_state = PAIR_FAILED;
-#elif defined(DEVICE_HELTEC)
-    pairStatus = FAILED;
-#endif
+  case PairingStartResult::TASK_ERROR:
+
+    server.send(500, "text/plain", "Failed to start pairing task");
+    Serial.println("HTTP POST /pair task error");
+    break;
   }
 }
 
@@ -472,93 +333,6 @@ static void webServerTask(void *param)
     server.handleClient();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
-}
-
-/**
- * @brief Tarea que realiza la derivación de la clave a partir de la contraseña.
- *
- * Flujo:
- *  - Recibe la contraseña en un buffer dinámico.
- *  - Deriva la clave AES (AES_KEY) usando derive_key_from_password().
- *  - Guarda la clave en NVS si la derivación es correcta.
- *  - Limpia la contraseña de memoria (borrado + free).
- *  - Actualiza el estado de emparejamiento.
- *  - Llama al callback de usuario (user_cb) con el resultado.
- */
-static void pairTask(void *param)
-{
-  char *pw = static_cast<char *>(param);
-  Serial.println("pairTask: starting derivation");
-
-#if defined(DEVICE_GATEWAY)
-  g_state = PAIR_BUSY;
-#endif
-
-  String pwStr(pw ? pw : "");
-  bool ok = false;
-
-  // Derivar clave desde la contraseña -> AES_KEY
-  ok = derive_key_from_password(pwStr, AES_KEY, AES_KEY_SIZE);
-
-  // Crear un nuevo espacio de IV para esta clave
-  if (ok)
-  {
-    if (!initializeIvForNewKey())
-    {
-      Serial.println("pairTask: failed to initialize IV epoch");
-      clear_aes_key();
-      ok = false;
-    }
-  }
-
-  // Borrar la contraseña de memoria
-  if (pw)
-  {
-    size_t len = strlen(pw);
-    memset(pw, 0, len);
-    free(pw);
-  }
-  pwStr = String();
-
-  // Si la derivación fue bien, guardar la clave en NVS
-  if (ok)
-  {
-    if (!store_device_key_in_nvs(AES_KEY, AES_KEY_SIZE))
-    {
-      Serial.println("pairTask: failed to store device key in NVS");
-      clear_aes_key();
-      ok = false;
-    }
-  }
-
-  // Actualizar estado según ok/fallo
-  if (ok)
-  {
-#if defined(DEVICE_GATEWAY)
-    prefs.begin("lora_proto", false);
-    prefs.putBool("paired", true);
-    prefs.end();
-    g_state = PAIR_SUCCESS;
-#endif
-    Serial.println("pairTask: derivation + store OK");
-  }
-  else
-  {
-#if defined(DEVICE_GATEWAY)
-    g_state = PAIR_FAILED;
-#elif defined(DEVICE_HELTEC)
-    pairStatus = FAILED;
-#endif
-    Serial.println("pairTask: derivation/store FAILED");
-  }
-
-  // Avisar al callback de usuario
-  if (user_cb)
-  {
-    user_cb(ok);
-  }
-
-  vTaskDelete(nullptr);
 }
 
 // ==================== API pública: control del AP ====================
@@ -597,11 +371,8 @@ void ap_start(const char *ssid, const char *ap_pass, uint8_t max_clients)
   if (!ok)
   {
     Serial.println("ap_start: WiFi.softAP failed");
-#if defined(DEVICE_GATEWAY)
-    g_state = PAIR_FAILED;
-#elif defined(DEVICE_HELTEC)
-    pairStatus = FAILED;
-#endif
+    pairingServiceMarkFailed();
+
     return;
   }
 
@@ -615,9 +386,11 @@ void ap_start(const char *ssid, const char *ap_pass, uint8_t max_clients)
   server.on("/status", HTTP_GET, handleStatus);
 
   // Rutas de configuración WiFi (gateway)
+  #ifdef DEVICE_GATEWAY
   server.on("/wifi", HTTP_GET, handleWifiPage);
   server.on("/wifi_config", HTTP_POST, handleWifiConfig);
   server.on("/wifi_status", HTTP_GET, handleWifiStatus);
+  #endif
 
   server.onNotFound(handleNotFound);
 
@@ -671,9 +444,8 @@ void ap_stop()
     ap_running = false;
   }
 
-#if defined(DEVICE_GATEWAY)
-  g_state = PAIR_IDLE;
-#endif
+  pairingServiceResetRuntimeState();
+
 }
 
 /**
@@ -683,7 +455,7 @@ void ap_stop()
  */
 void ap_set_pair_callback(pair_callback_t cb)
 {
-  user_cb = cb;
+  pairingServiceSetCallback(cb);
 }
 
 /**
@@ -693,9 +465,5 @@ void ap_set_pair_callback(pair_callback_t cb)
  */
 PairState ap_get_state()
 {
-#if defined(DEVICE_GATEWAY)
-  return g_state;
-#else
-  return PAIR_IDLE;
-#endif
+  return pairingServiceGetState();
 }

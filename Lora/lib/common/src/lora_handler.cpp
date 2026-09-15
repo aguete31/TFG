@@ -1,11 +1,10 @@
 #include "lora_handler.h"
 #include <LoRa.h>
-#include "http_server.h"
 #include "device_id.h"
 #include <protocol.h>
-#include "telemetry_buffer.h"
 #include "gateway_time.h"
 #include "anti_replay.h"
+#include "telemetry_store.h"
 
 // ==================== Gestión de duplicados LoRa ====================
 
@@ -74,6 +73,8 @@ static void sendAck(uint32_t seq)
 void lora_handler_init(const String &deviceId)
 {
   g_device_id = deviceId;
+
+  telemetryStoreInit();
 }
 
 
@@ -109,21 +110,13 @@ void lora_handle_binary_packet(const uint8_t *packet, size_t packetLen, int rssi
   addToBuffer(msg.deviceId,msg.seq);
 
   Serial.printf("RX BIN [%lu] from deviceId=%s: %s | RSSI=%d SNR=%.1f\n", (unsigned long)msg.seq, msg.deviceId.c_str(), msg.payload.c_str(), rssi, snr);
-
-  // De momento el ACK real sigue siendo JSON
   sendAck(msg.seq);
+  
+  bool stored = telemetryStoreUpdate(msg.deviceId, msg.seq, msg.payload, rssi, snr, gateway_time_now());
 
-  // Guardar telemetría exactamente igual que con JSON
-  TelemetryData data;
-  data.timestamp = gateway_time_now();
-  data.deviceId = msg.deviceId;
-  data.payload = msg.payload;
-  data.rssi = rssi;
-  data.snr = snr;
+  if (!stored)
+  {
+    Serial.printf("TELEMETRY: no se pudo almacenar DATA [%lu]\n", (unsigned long)msg.seq);
+  }
 
-  saveTelemetryData(data);
-
-  // En el protocolo binario ya no existe retry.
-  // Usamos 0 mientras esta API antigua siga esperando ese campo.
-  http_set_last_telemetry(data.timestamp, 0, msg.deviceId, msg.payload, rssi, snr);
 }

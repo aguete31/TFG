@@ -2,31 +2,7 @@
 
 #include <stdint.h>
 #include "pair_status.h"
-
-/**
- * @typedef pair_callback_t
- * @brief Tipo de función callback que se invoca al completar el proceso de emparejamiento.
- * @param ok Indica si el emparejamiento fue exitoso (true) o fallido (false).
- */
-typedef void (*pair_callback_t)(bool ok);
-
-/**
- * @var pairStatus
- * @brief Estado global y volátil del proceso de emparejamiento.
- */
-extern volatile PairStatus pairStatus;
-
-/**
- * @enum PairState
- * @brief Estados posibles del proceso de emparejamiento en el punto de acceso.
- */
-enum PairState {
-  PAIR_IDLE,    /**< Estado inactivo, sin emparejamiento en curso */
-  PAIR_PENDING, /**< Emparejamiento pendiente o en cola */
-  PAIR_BUSY,    /**< Emparejamiento en proceso */
-  PAIR_SUCCESS, /**< Emparejamiento completado con éxito */
-  PAIR_FAILED   /**< Emparejamiento fallido */
-};
+#include "pairing_service.h"
 
 /**
  * @brief Inicia el punto de acceso WiFi y el servidor HTTP para la configuración y emparejamiento.
