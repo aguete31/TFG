@@ -14,6 +14,8 @@
 #include "device_id.h"
 #include "lora_handler.h"
 #include "wifi_config.h"
+#include "mqtt_config.h"
+#include "mqtt_handler.h"
 
 // ==================== Configuración de hardware ====================
 
@@ -110,15 +112,17 @@ void setup()
   // ---------------------------------------------------------------------------
   // Si NO estoy emparejado o NO tengo WiFi conectada -> encender AP
   // ---------------------------------------------------------------------------
-  if (!isPaired || !wifiConnected)
+  bool mqttConfigured = mqttConfigExists();
+
+  if (!isPaired || !wifiConnected || !mqttConfigured)
   {
-    Serial.println("Arrancando AP de configuración (pair + WiFi)...");
+    Serial.println("Arrancando AP de configuración (pair + WiFi + MQTT)...");
     ap_set_pair_callback(on_paired);
     ap_start("LoRaSetupTTGO", "Config123!", 4);
   }
   else
   {
-    Serial.println("Arrancando directamente en STA, sin AP");
+    Serial.println("Configuración completa -> arrancando directamente en STA, sin AP");
   }
 
   // ---------------------------------------------------------------------------
@@ -129,6 +133,11 @@ void setup()
 
   // Inicializar handler de LoRa (buffer duplicados, etc.)
   lora_handler_init(DEVICE_ID);
+
+  if (!mqttHandlerStart(DEVICE_ID))
+  {
+    Serial.println("MQTT: error iniciando handler");
+  }
 
   // ---------------------------------------------------------------------------
   // Si ya hay WiFi conectada desde el arranque, arrancar http_server ya
@@ -232,9 +241,9 @@ void loop()
   }
 
   // Programar apagado del AP cuando la WiFi se conecta por primera vez
-  if (g_is_paired && wifi_now_connected && !ap_off_scheduled && !ap_should_stop)
+  if (g_is_paired && wifi_now_connected && mqttConfigExists() && !ap_off_scheduled && !ap_should_stop)
   {
-    Serial.println("WiFi conectada correctamente. Programando apagado del AP en 15s...");
+    Serial.println("WiFi + MQTT configurados correctamente. Programando apagado del AP en 15s...");
     ap_should_stop = true;
     ap_stop_at = millis() + 15000; // 15 s para que el usuario vea el estado en la web
   }

@@ -1,0 +1,440 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <title>Configuración MQTT - Gateway LoRa</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #0f172a 0, #020617 50%, #000 100%);
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: rgba(15, 23, 42, 0.92);
+      border-radius: 16px;
+      padding: 24px 24px 20px;
+      box-shadow:
+        0 22px 45px rgba(0, 0, 0, 0.6),
+        0 0 0 1px rgba(148, 163, 184, 0.1);
+      backdrop-filter: blur(18px);
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .icon-circle {
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 30% 0, #38bdf8, #0284c7);
+      box-shadow: 0 0 18px rgba(56, 189, 248, 0.5);
+      color: white;
+      font-size: 22px;
+    }
+
+    h1 {
+      font-size: 19px;
+      margin: 0;
+      color: #f9fafb;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: #e5e7eb;
+    }
+
+    .input-wrapper {
+      position: relative;
+      width: 100%;
+      margin-bottom: 12px;
+    }
+
+    input {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 10px;
+      border: 1px solid #4b5563;
+      background: rgba(15, 23, 42, 0.9);
+      color: #f9fafb;
+      font-size: 14px;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.4);
+    }
+
+    input::placeholder {
+      color: #6b7280;
+    }
+
+    .toggle-password {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      cursor: pointer;
+      color: #9ca3af;
+      user-select: none;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 14px;
+      margin-bottom: 16px;
+    }
+
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status-circle {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: #6b7280;
+    }
+
+    .status-circle.configured {
+      background: #22c55e;
+      box-shadow: 0 0 12px rgba(34, 197, 94, 0.7);
+    }
+
+    .status-circle.error {
+      background: #ef4444;
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.7);
+    }
+
+    .status-text {
+      font-size: 12px;
+      color: #9ca3af;
+    }
+
+    .status-chip {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+    }
+
+    button {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      color: #082f49;
+      background: linear-gradient(135deg, #38bdf8, #7dd3fc);
+      box-shadow: 0 10px 22px rgba(14, 165, 233, 0.3);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    .footer {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #6b7280;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="card">
+
+    <div class="header">
+      <div class="icon-circle">⇄</div>
+
+      <div>
+        <h1>Configuración MQTT</h1>
+
+        <div class="subtitle">
+          Configura el broker MQTT de Home Assistant al que enviará datos el Gateway.
+        </div>
+      </div>
+    </div>
+
+    <label for="host">IP o hostname del broker</label>
+
+    <div class="input-wrapper">
+      <input
+        type="text"
+        id="host"
+        placeholder="Ej: 192.168.1.50"
+      />
+    </div>
+
+    <label for="port">Puerto MQTT</label>
+
+    <div class="input-wrapper">
+      <input
+        type="number"
+        id="port"
+        value="1883"
+        min="1"
+        max="65535"
+      />
+    </div>
+
+    <label for="user">Usuario MQTT</label>
+
+    <div class="input-wrapper">
+      <input
+        type="text"
+        id="user"
+        placeholder="Ej: corbit_gateway"
+      />
+    </div>
+
+    <label for="mqttPassword">Contraseña MQTT</label>
+
+    <div class="input-wrapper">
+      <input
+        type="password"
+        id="mqttPassword"
+        placeholder="Contraseña MQTT"
+      />
+
+      <div
+        class="toggle-password"
+        id="togglePassword">
+        👁
+      </div>
+    </div>
+
+    <div class="status-row">
+
+      <div class="status-left">
+        <div
+          id="statusCircle"
+          class="status-circle">
+        </div>
+
+        <div
+          id="statusText"
+          class="status-text">
+          Sin configuración MQTT
+        </div>
+      </div>
+
+      <div
+        id="statusChip"
+        class="status-chip">
+        No configurado
+      </div>
+
+    </div>
+
+    <button id="saveBtn">
+      Guardar configuración MQTT
+    </button>
+
+    <div class="footer" id="brokerInfo">
+      Gateway TTGO · MQTT no configurado
+    </div>
+
+  </div>
+
+
+  <script>
+
+    const hostInput = document.getElementById('host');
+    const portInput = document.getElementById('port');
+    const userInput = document.getElementById('user');
+    const passwordInput = document.getElementById('mqttPassword');
+    const saveBtn = document.getElementById('saveBtn');
+    const statusCircle = document.getElementById('statusCircle');
+    const statusText = document.getElementById('statusText');
+    const statusChip = document.getElementById('statusChip');
+    const brokerInfo = document.getElementById('brokerInfo');
+
+    document
+      .getElementById('togglePassword')
+      .addEventListener('click', () => {
+
+        passwordInput.type = passwordInput.type === 'password' ? 'text' : 'password';
+
+      });
+
+
+    function setConfigured(configured) {
+
+      if (configured) {
+
+        statusCircle.className = 'status-circle configured';
+        statusText.textContent = 'Configuración MQTT guardada';
+        statusChip.textContent = 'Configurado';
+
+      } else {
+
+        statusCircle.className = 'status-circle';
+        statusText.textContent = 'Sin configuración MQTT';
+        statusChip.textContent = 'No configurado';
+      }
+    }
+
+    saveBtn.addEventListener('click', () => {
+
+      const host = hostInput.value.trim();
+      const port = portInput.value.trim();
+      const user = userInput.value.trim();
+      const password = passwordInput.value;
+
+      if (!host) {
+        alert('Introduce la IP o hostname del broker MQTT');
+        return;
+      }
+
+      if (!port) {
+        alert('Introduce el puerto MQTT');
+        return;
+      }
+
+      if (!user) {
+        alert('Introduce el usuario MQTT');
+        return;
+      }
+
+      if (!password) {
+        alert('Introduce la contraseña MQTT');
+        return;
+      }
+
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Guardando...';
+
+      fetch('/mqtt_config', {
+
+        method: 'POST',
+
+        headers: {
+          'Content-Type':
+            'application/x-www-form-urlencoded'
+        },
+
+        body:
+          'host=' + encodeURIComponent(host) +
+          '&port=' + encodeURIComponent(port) +
+          '&user=' + encodeURIComponent(user) +
+          '&password=' + encodeURIComponent(password)
+
+      })
+        .then(res => {
+
+          if (!res.ok)
+            throw new Error();
+
+          return res.text();
+
+        })
+        .then(() => {
+
+          setConfigured(true);
+
+          brokerInfo.textContent = host + ':' + port;
+          saveBtn.disabled = false;
+
+          saveBtn.textContent = 'Guardar configuración MQTT';
+
+          // No conservamos la contraseña en el navegador
+          passwordInput.value = '';
+
+        })
+        .catch(() => {
+
+          statusCircle.className = 'status-circle error';
+          statusText.textContent = 'Error guardando configuración MQTT';
+          statusChip.textContent = 'Error';
+
+          saveBtn.disabled = false;
+
+          saveBtn.textContent = 'Guardar configuración MQTT';
+
+        });
+
+    });
+
+
+    function updateStatus() {
+
+      fetch('/mqtt_status')
+
+        .then(res => res.json())
+
+        .then(data => {
+
+          const configured = data.configured === true;
+          setConfigured(configured);
+
+          if (configured) {
+
+            if (data.host)
+              hostInput.value = data.host;
+
+            if (data.port)
+              portInput.value = data.port;
+
+            brokerInfo.textContent = data.host + ':' + data.port;
+
+          }
+
+        })
+        .catch(() => {
+
+          statusCircle.className = 'status-circle error';
+          statusText.textContent = 'Sin respuesta del Gateway';
+          statusChip.textContent = 'Error';
+
+        });
+
+    }
+
+    updateStatus();
+
+  </script>
+
+</body>
+
+</html>

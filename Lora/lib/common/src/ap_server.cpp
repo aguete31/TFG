@@ -6,6 +6,7 @@
 
 #include "pairing_service.h"
 #include "wifi_config.h"
+#include "mqtt_config.h"
 
 // ==================== Estado global interno ====================
 
@@ -59,6 +60,10 @@ static void handleNotFound();
  * @brief Manejador HTTP: inicia el proceso de emparejamiento (POST /pair).
  */
 static void handlePair();
+
+static void handleMqttPage();
+static void handleMqttConfig();
+static void handleMqttStatus();
 
 // ==================== Manejadores HTTP (HTML / JSON) ====================
 /**
@@ -146,6 +151,91 @@ static void handleWifiConfig()
   }
 
   server.send(200, "text/plain", "OK");
+}
+
+
+static void handleMqttPage()
+{
+  const char *path = "/gateway_mqtt.html";
+
+  if (SPIFFS.exists(path))
+  {
+    File f = SPIFFS.open(path, "r");
+    server.streamFile(f, "text/html");
+
+    f.close();
+  }
+  else
+  {
+    server.send(500, "text/plain", "Archivo gateway_mqtt.html no encontrado");
+  }
+
+  Serial.println("HTTP GET /mqtt -> gateway_mqtt.html");
+}
+
+
+static void handleMqttConfig()
+{
+  if (!server.hasArg("host") || !server.hasArg("port") || !server.hasArg("user") || !server.hasArg("password"))
+  {
+    server.send(400, "text/plain", "Missing MQTT configuration");
+    Serial.println("HTTP POST /mqtt_config missing arg");
+
+    return;
+  }
+
+  int port = server.arg("port").toInt();
+
+  if (port <= 0 || port > 65535)
+  {
+    server.send(400, "text/plain", "Invalid MQTT port");
+    return;
+  }
+
+  MqttConfig config;
+
+  config.host = server.arg("host");
+  config.port = static_cast<uint16_t>(port);
+  config.user = server.arg("user");
+  config.password = server.arg("password");
+
+  if (!mqttConfigSave(config))
+  {
+    server.send(400, "text/plain", "Invalid MQTT configuration");
+    return;
+  }
+
+  server.send(200, "text/plain", "OK");
+  Serial.printf("HTTP POST /mqtt_config -> saved host=%s port=%u\n", config.host.c_str(), config.port);
+}
+
+
+static void handleMqttStatus()
+{
+  MqttConfig config;
+
+  bool configured = mqttConfigLoad(config);
+  String json = "{";
+
+  json += "\"configured\":";
+  json += configured ? "true" : "false";
+
+  if (configured)
+  {
+    json += ",\"host\":\"";
+    json += config.host;
+    json += "\"";
+
+    json += ",\"port\":";
+    json += String(config.port);
+
+    json += ",\"user_configured\":";
+    json += config.user.length() > 0 ? "true" : "false";
+  }
+
+  json += "}";
+
+  server.send(200, "application/json", json);
 }
 
 /**
@@ -390,6 +480,10 @@ void ap_start(const char *ssid, const char *ap_pass, uint8_t max_clients)
   server.on("/wifi", HTTP_GET, handleWifiPage);
   server.on("/wifi_config", HTTP_POST, handleWifiConfig);
   server.on("/wifi_status", HTTP_GET, handleWifiStatus);
+
+  server.on("/mqtt", HTTP_GET, handleMqttPage);
+  server.on("/mqtt_config", HTTP_POST, handleMqttConfig);
+  server.on("/mqtt_status", HTTP_GET, handleMqttStatus);
   #endif
 
   server.onNotFound(handleNotFound);

@@ -304,16 +304,26 @@ bool telemetryStoreGetDevice(size_t index, TelemetryState &out)
 }
 
 
-bool telemetryStoreMarkPublished(const String &deviceId)
+bool telemetryStoreMarkPublished(const String &deviceId, uint32_t seq)
 {
-    TelemetryState *state = findDevice(deviceId);
+  for (size_t i = 0; i < MAX_TELEMETRY_DEVICES; ++i)
+  {
+    TelemetryState &state = g_devices[i];
 
-    if (!state)
-        return false;
+    if (!state.used)
+      continue;
 
-    state->pendingPublish = false;
+    if (state.deviceId != deviceId)
+      continue;
 
+    if (state.seq != seq)
+      return false;
+
+    state.pendingPublish = false;
     return true;
+  }
+  
+  return false;
 }
 
 

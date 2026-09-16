@@ -84,7 +84,7 @@ size_t telemetryStoreDeviceCount();
 
 bool telemetryStoreGetDevice(size_t index, TelemetryState &out);
 
-bool telemetryStoreMarkPublished(const String &deviceId);
+bool telemetryStoreMarkPublished(const String &deviceId, uint32_t seq);
 
 // Eventos pendientes para MQTT
 size_t telemetryStoreEventCount();
