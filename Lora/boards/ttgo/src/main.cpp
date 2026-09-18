@@ -17,6 +17,8 @@
 #include "mqtt_config.h"
 #include "mqtt_handler.h"
 
+#include "power_manager.h"
+
 // ==================== Configuración de hardware ====================
 
 #define FACTORY_RESET_PIN 38 // Pin físico para factory reset (a GND)
@@ -128,6 +130,12 @@ void setup()
   // ---------------------------------------------------------------------------
   // Inicializar LoRa (radio)
   // ---------------------------------------------------------------------------
+  if (!powerManagerInit())
+  {
+    Serial.println("PMU: error inicializando alimentación LoRa");
+  }
+  delay(100);
+
   lora_begin_basic();
   Serial.println("TTGO GATEWAY ROBUST MODE (BINARY V1)");
 

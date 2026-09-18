@@ -48,15 +48,15 @@
   #define LORA_SCK  5
   #define LORA_MISO 19
   #define LORA_MOSI 27
-#elif defined(BOARD_TTGO_LORA32_V1)
+#elif defined(BOARD_TBEAM_V1_1)
   #define LORA_SS   18
-  #define LORA_RST  14
+  #define LORA_RST  23
   #define LORA_DIO0 26
   #define LORA_SCK  5
   #define LORA_MISO 19
   #define LORA_MOSI 27
 #else
-  #error "Define BOARD_HELTEC_V1 o BOARD_TTGO_LORA32_V1"
+  #error "Define BOARD_HELTEC_V1 o BOARD_TBEAM_V1_1"
 #endif
 
 /**
@@ -71,8 +71,11 @@ inline void lora_begin_basic() {
 
     if (!LoRa.begin(LORA_FREQ_HZ))
     {
-        Serial.println("LoRa init failed");
-        while(1) delay(100);
+      Serial.println("LoRa init failed");
+      while (true)
+      {
+        delay(1000);
+      }
     }
 
     LoRa.setSpreadingFactor(LORA_SF);

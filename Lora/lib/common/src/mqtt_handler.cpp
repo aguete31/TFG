@@ -15,6 +15,9 @@ static constexpr uint32_t MQTT_RECONNECT_DELAY_MS = 5000;
 static constexpr uint32_t MQTT_NO_WIFI_DELAY_MS = 1000;
 static constexpr uint32_t MQTT_NO_CONFIG_DELAY_MS = 2000;
 
+static constexpr size_t MQTT_DISCOVERY_CACHE_SIZE = 10;
+static String g_discoveryPublishedDevices[MQTT_DISCOVERY_CACHE_SIZE];
+
 // =========================================================
 // ESTADO
 // =========================================================
@@ -39,6 +42,59 @@ static String buildClientId()
 static String buildAvailabilityTopic()
 {
   return "lora-p2p/gateway/" + g_deviceId + "/availability";
+}
+
+static void resetDiscoveryCache()
+{
+  for (size_t i = 0; i < MQTT_DISCOVERY_CACHE_SIZE; ++i)
+  {
+    g_discoveryPublishedDevices[i] = "";
+  }
+}
+
+static bool discoveryAlreadyPublished(const String &deviceId)
+{
+  for (size_t i = 0; i < MQTT_DISCOVERY_CACHE_SIZE; ++i)
+  {
+    if (g_discoveryPublishedDevices[i] == deviceId)
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static void markDiscoveryPublished(const String &deviceId)
+{
+  for (size_t i = 0; i < MQTT_DISCOVERY_CACHE_SIZE; ++i)
+  {
+    if (g_discoveryPublishedDevices[i].length() == 0)
+    {
+      g_discoveryPublishedDevices[i] = deviceId;
+      return;
+    }
+  }
+
+  Serial.println("MQTT DISCOVERY: cache lleno");
+}
+
+static bool publishHomeAssistantDiscovery(const TelemetryState &state);
+
+static bool ensureDiscoveryPublished(const TelemetryState &state)
+{
+  if (discoveryAlreadyPublished(state.deviceId))
+  {
+    return true;
+  }
+
+  if (!publishHomeAssistantDiscovery(state))
+  {
+    return false;
+  }
+
+  markDiscoveryPublished(state.deviceId);
+  return true;
 }
 
 // =========================================================
@@ -78,6 +134,8 @@ static bool connectToBroker()
 
     return false;
   }
+
+  resetDiscoveryCache();
 
   // Publicar disponibilidad actual
   bool published = g_mqttClient.publish(availabilityTopic.c_str(), "online", true);
@@ -140,6 +198,109 @@ static void publishPendingEvents()
 }
 
 
+static bool publishHomeAssistantDiscovery(const TelemetryState &state)
+{
+  String discoveryTopic = "homeassistant/device/" + state.deviceId + "/config";
+  String stateTopic = "lora-p2p/device/" + state.deviceId + "/state";
+  String availabilityTopic = "lora-p2p/gateway/" + g_deviceId + "/availability";
+  JsonDocument doc;
+
+  // ---------------------------------
+  // --------- Dispositivo -----------
+  // ---------------------------------
+  JsonObject device = doc["device"].to<JsonObject>();
+  device["identifiers"] = state.deviceId;
+  device["name"] = "LoRa Sensor " + state.deviceId;
+  device["manufacturer"] = "Heltec";
+  device["model"] = "WiFi LoRa 32 V1";
+  device["serial_number"] = state.deviceId;
+
+  // ---------------------------------
+  // ----- Origen del Discovery ------
+  // ---------------------------------
+  JsonObject origin = doc["origin"].to<JsonObject>();
+  origin["name"] = "lora-p2p-gateway";
+
+  // ---------------------------------
+  // ------ Topics compartidos -------
+  // ---------------------------------
+  doc["state_topic"] = stateTopic;
+  doc["availability_topic"] = availabilityTopic;
+  doc["payload_available"] = "online";
+  doc["payload_not_available"] = "offline";
+  doc["qos"] = 0;
+
+  // ---------------------------------
+  // ---------- Componentes-----------
+  // ---------------------------------
+  JsonObject components = doc["components"].to<JsonObject>();
+
+  // Temperatura
+  {
+    JsonObject sensor = components["temperature"].to<JsonObject>();
+    sensor["platform"] = "sensor";
+    sensor["name"] = "Temperatura";
+    sensor["unique_id"] = state.deviceId + "_temperature";
+    sensor["device_class"] = "temperature";
+    sensor["unit_of_measurement"] = "°C";
+    sensor["state_class"] = "measurement";
+    sensor["value_template"] = "{{ value_json.temp }}";
+  }
+
+  // Humedad
+  {
+    JsonObject sensor = components["humidity"].to<JsonObject>();
+    sensor["platform"] = "sensor";
+    sensor["name"] = "Humedad";
+    sensor["unique_id"] = state.deviceId + "_humidity";
+    sensor["device_class"] = "humidity";
+    sensor["unit_of_measurement"] = "%";
+    sensor["state_class"] = "measurement";
+    sensor["value_template"] = "{{ value_json.hum }}";
+  }
+
+  // RSSI
+  {
+    JsonObject sensor = components["rssi"].to<JsonObject>();
+    sensor["platform"] = "sensor";
+    sensor["name"] = "RSSI";
+    sensor["unique_id"] = state.deviceId + "_rssi";
+    sensor["device_class"] = "signal_strength";
+    sensor["unit_of_measurement"] = "dBm";
+    sensor["state_class"] = "measurement";
+    sensor["value_template"] = "{{ value_json.rssi }}";
+  }
+
+  // SNR
+  {
+    JsonObject sensor = components["snr"].to<JsonObject>();
+    sensor["platform"] = "sensor";
+    sensor["name"] = "SNR";
+    sensor["unique_id"] = state.deviceId + "_snr";
+    sensor["unit_of_measurement"] = "dB";
+    sensor["state_class"] = "measurement";
+    sensor["value_template"] = "{{ value_json.snr }}";
+  }
+
+  // -------------------------------------------------------
+  // Serializar
+  // -------------------------------------------------------
+  String payload;
+  serializeJson(doc, payload);
+
+  bool published = g_mqttClient.publish(discoveryTopic.c_str(), payload.c_str(), true); // RETAINED
+
+  if (!published)
+  {
+    Serial.printf("MQTT DISCOVERY: error device=%s bytes=%u\n", state.deviceId.c_str(), static_cast<unsigned int>(payload.length()));
+    return false;
+  }
+
+  Serial.printf("MQTT DISCOVERY: publicado device=%s bytes=%u\n", state.deviceId.c_str(), static_cast<unsigned int>(payload.length()));
+  return true;
+}
+
+
 static void publishPendingTelemetry()
 {
   size_t count = telemetryStoreDeviceCount();
@@ -155,6 +316,12 @@ static void publishPendingTelemetry()
 
     if (!state.used || !state.pendingPublish)
     {
+      continue;
+    }
+
+    if (!ensureDiscoveryPublished(state))
+    {
+      Serial.printf("MQTT DISCOVERY: pendiente device=%s\n", state.deviceId.c_str());
       continue;
     }
 
@@ -219,7 +386,7 @@ static void mqttTask(void *param)
 
   // Suficiente para telemetría sencilla.
   // Más adelante podremos aumentarlo para HA Discovery.
-  g_mqttClient.setBufferSize(512);
+  g_mqttClient.setBufferSize(2048);
 
   while (true)
   {
