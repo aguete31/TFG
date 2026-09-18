@@ -165,7 +165,7 @@ static void publishPendingEvents()
     JsonDocument doc;
 
     doc["timestamp"] = event.timestamp;
-    doc["type"] = telemetryEventTypeToString(event.type);
+    doc["event_type"] = telemetryEventTypeToString(event.type);
     doc["value"] = event.value;
     doc["threshold"] = event.threshold;
 
@@ -280,6 +280,27 @@ static bool publishHomeAssistantDiscovery(const TelemetryState &state)
     sensor["unit_of_measurement"] = "dB";
     sensor["state_class"] = "measurement";
     sensor["value_template"] = "{{ value_json.snr }}";
+  }
+
+  // Eventos de alarma
+  {
+    JsonObject event = components["alarm_event"].to<JsonObject>();
+    event["platform"] = "event";
+    event["name"] = "Eventos";
+    event["unique_id"] = state.deviceId + "_events";
+    event["state_topic"] = "lora-p2p/device/" + state.deviceId + "/event";
+    
+    JsonArray eventTypes = event["event_types"].to<JsonArray>();
+    
+    eventTypes.add("HIGH_TEMP_START");
+    eventTypes.add("HIGH_TEMP_END");
+    eventTypes.add("LOW_TEMP_START");
+    eventTypes.add("LOW_TEMP_END");
+
+    eventTypes.add("HIGH_HUMIDITY_START");
+    eventTypes.add("HIGH_HUMIDITY_END");
+    eventTypes.add("LOW_HUMIDITY_START");
+    eventTypes.add("LOW_HUMIDITY_END");
   }
 
   // -------------------------------------------------------
